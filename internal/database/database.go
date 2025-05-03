@@ -1,9 +1,11 @@
 package database
 
 import (
+	"backend/migrations"
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"strconv"
@@ -11,6 +13,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/joho/godotenv/autoload"
+	"github.com/pressly/goose/v3"
+	_ "gotest.tools/v3/fs"
 )
 
 // Service represents a service that interacts with a database.
@@ -45,8 +49,14 @@ func New() Service {
 	}
 	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s", username, password, host, port, database, schema)
 	db, err := sql.Open("pgx", connStr)
+
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	err = MigrateFs(db, migrations.FS, ".")
+	if err != nil {
+		log.Panicf("err %w", err)
 	}
 	dbInstance = &service{
 		db: db,
@@ -103,6 +113,23 @@ func (s *service) Health() map[string]string {
 	}
 
 	return stats
+}
+func MigrateFs(db *sql.DB, migrationFS fs.FS, dir string) error {
+	goose.SetBaseFS(migrationFS)
+	defer func() {
+		goose.SetBaseFS(nil)
+	}()
+	return Migrate(db, dir)
+}
+
+func Migrate(db *sql.DB, dir string) error {
+	if err := goose.SetDialect("postgres"); err != nil {
+		return fmt.Errorf("issue with setting dialect: %w", err)
+	}
+	if err := goose.Up(db, dir); err != nil {
+		return fmt.Errorf("goose up failed: %w", err)
+	}
+	return nil
 }
 
 // Close closes the database connection.
