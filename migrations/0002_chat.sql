@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS chat_line (
     user_id INT NOT NULL,
     line_text TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    summary TEXT,
     CONSTRAINT fk_chat_line_chat FOREIGN KEY (chat_id) REFERENCES chat(id) ON DELETE NO ACTION ON UPDATE NO ACTION,
     CONSTRAINT fk_chat_line_chat_user FOREIGN KEY (user_id) REFERENCES chat_user(id) ON DELETE NO ACTION ON UPDATE NO ACTION
 );

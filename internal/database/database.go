@@ -26,8 +26,8 @@ type Service interface {
 	Close() error
 	// GetOrCreateChatUserByHandle finds a user by handle or creates a new one, returning the ID.
 	GetOrCreateChatUserByHandle(ctx context.Context, handle string) (int, error)
-	// SaveChatLine saves a line of text to a specific chat associated with a user.
-	SaveChatLine(ctx context.Context, chatID int, userID int, text string, timestamp time.Time) error
+	// SaveChatLine saves a line of text and its optional summary to a specific chat associated with a user.
+	SaveChatLine(ctx context.Context, chatID int, userID int, text string, summary *string, timestamp time.Time) error // MODIFIED: Added summary *string
 	// EnsureChatExists creates a chat with the given ID if it doesn't exist.
 	EnsureChatExists(ctx context.Context, chatID int) error
 }
@@ -79,15 +79,17 @@ func New() Service {
 		// Alternatively, set search_path for the session if needed:
 		// _, err = db.Exec(fmt.Sprintf("SET search_path TO %s", schema))
 		// if err != nil {
-		//     log.Printf("Warning: Failed to set search_path for session: %v", err)
+		//      log.Printf("Warning: Failed to set search_path for session: %v", err)
 		// }
 	}
 
 	// Run migrations
+	log.Println("Applying database migrations...") // Added log
 	err = MigrateFs(db, migrations.FS, ".")
 	if err != nil {
 		log.Panicf("Migration error: %w", err) // Changed to %w for error wrapping
 	}
+	log.Println("Database migrations applied successfully.") // Added log
 
 	dbInstance = &service{
 		db: db,
@@ -161,42 +163,55 @@ func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string
 		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	// Defer rollback in case of error, commit will override if successful
-	defer tx.Rollback()
+	defer func() {
+		// Only rollback if tx is not nil (i.e., BeginTx succeeded) and commit hasn't happened
+		// It's generally safe to call Rollback even after Commit, as it becomes a no-op,
+		// but explicit check can prevent potential issues in edge cases or different DB drivers.
+		_ = tx.Rollback() // The error is ignored on purpose, usually logged if needed
+	}()
+
 
 	// Try to find the user
-	selectQuery := `SELECT id FROM chat_user WHERE handle = $1`
+	selectQuery := `SELECT id FROM chat_user WHERE handle = $1 FOR UPDATE` // Added FOR UPDATE for better concurrency control
 	err = tx.QueryRowContext(ctx, selectQuery, handle).Scan(&userID)
 
 	if err == nil {
 		// User found, commit transaction early and return ID
-		if err := tx.Commit(); err != nil {
-			return 0, fmt.Errorf("failed to commit transaction after finding user: %w", err)
+		if errCommit := tx.Commit(); errCommit != nil {
+			return 0, fmt.Errorf("failed to commit transaction after finding user: %w", errCommit)
 		}
 		return userID, nil
-	} else if errors.Is(err, sql.ErrNoRows) {
+	}
+
+	if errors.Is(err, sql.ErrNoRows) {
 		// User not found, insert new user
+		// RELEASE SAVEPOINT cockroach_restart; // Example for CockroachDB retry, adapt if needed
+        // SAVEPOINT cockroach_restart;        // Example for CockroachDB retry
+
 		insertQuery := `INSERT INTO chat_user (handle) VALUES ($1) RETURNING id`
-		err = tx.QueryRowContext(ctx, insertQuery, handle).Scan(&userID)
-		if err != nil {
+		errInsert := tx.QueryRowContext(ctx, insertQuery, handle).Scan(&userID)
+		if errInsert != nil {
 			// Rollback handled by defer
-			return 0, fmt.Errorf("failed to insert new chat user '%s': %w", handle, err)
+			return 0, fmt.Errorf("failed to insert new chat user '%s': %w", handle, errInsert)
 		}
 		// Commit transaction after successful insert
-		if err := tx.Commit(); err != nil {
-			return 0, fmt.Errorf("failed to commit transaction after inserting user: %w", err)
+		if errCommit := tx.Commit(); errCommit != nil {
+			return 0, fmt.Errorf("failed to commit transaction after inserting user: %w", errCommit)
 		}
 		return userID, nil
-	} else {
-		// Another error occurred during select query
-		// Rollback handled by defer
-		return 0, fmt.Errorf("failed to query chat user '%s': %w", handle, err)
 	}
+
+	// Another error occurred during select query
+	// Rollback handled by defer
+	return 0, fmt.Errorf("failed to query chat user '%s': %w", handle, err)
+
 }
 
-// SaveChatLine saves a line of text to a specific chat associated with a user.
-func (s *service) SaveChatLine(ctx context.Context, chatID int, userID int, text string, timestamp time.Time) error {
-	query := `INSERT INTO chat_line (chat_id, user_id, line_text, created_at) VALUES ($1, $2, $3, $4)`
-	_, err := s.db.ExecContext(ctx, query, chatID, userID, text, timestamp)
+// SaveChatLine saves a line of text and its optional summary to a specific chat associated with a user.
+// MODIFIED: Accepts and saves summary.
+func (s *service) SaveChatLine(ctx context.Context, chatID int, userID int, text string, summary *string, timestamp time.Time) error {
+	query := `INSERT INTO chat_line (chat_id, user_id, line_text, summary, created_at) VALUES ($1, $2, $3, $4, $5)`
+	_, err := s.db.ExecContext(ctx, query, chatID, userID, text, summary, timestamp) // Pass summary here
 	if err != nil {
 		return fmt.Errorf("failed to insert chat line: %w", err)
 	}
@@ -212,23 +227,31 @@ func MigrateFs(db *sql.DB, migrationFS fs.FS, dir string) error {
 	return Migrate(db, dir)
 }
 
+
 // Migrate runs migrations using Goose.
 func Migrate(db *sql.DB, dir string) error {
 	if err := goose.SetDialect("postgres"); err != nil {
 		return fmt.Errorf("failed to set goose dialect: %w", err)
 	}
 	// Ensure the migrations table exists even before running Up
-       /* if _, err := goose.EnsureAdminTable(db); err != nil {*/
-		/*return fmt.Errorf("failed to ensure goose admin table: %w", err)*/
-       /* }*/
+        /* if _, err := goose.EnsureAdminTable(db); err != nil {*/
+                /*return fmt.Errorf("failed to ensure goose admin table: %w", err)*/
+        /* }*/
 
-	log.Println("Running database migrations...")
+	log.Println("Running database migrations up...") // Clarified log
 	if err := goose.Up(db, dir); err != nil {
-		return fmt.Errorf("goose up migration failed: %w", err)
+		// Don't return error immediately, log and maybe try status
+		log.Printf("Goose 'up' migration failed: %v. Checking status...", err)
+		// Optional: Check status after failed 'up'
+        if statusErr := goose.Status(db, dir); statusErr != nil {
+            log.Printf("Failed to get goose status after migration failure: %v", statusErr)
+        }
+		return fmt.Errorf("goose 'up' migration failed: %w", err) // Return the original error
 	}
-	log.Println("Database migrations completed.")
+	log.Println("Database migrations 'up' completed.") // Clarified log
 	return nil
 }
+
 
 // Close closes the database connection.
 func (s *service) Close() error {
