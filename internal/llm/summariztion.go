@@ -35,7 +35,7 @@ type Config struct {
 
 // LoadConfig loads summarizer configuration from environment variables.
 func LoadConfig() Config {
-	maxTokens := 150 // Default value
+	maxTokens := 1000// Default value
 	if os.Getenv("SUMMARIZER_MAX_TOKENS") != "" {
 		fmt.Sscanf(os.Getenv("SUMMARIZER_MAX_TOKENS"), "%d", &maxTokens)
 	}

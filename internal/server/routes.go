@@ -1,28 +1,27 @@
 package server
 
 import (
-	// Keep necessary imports
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
-	"strings" // Added for TrimSpace if needed on payload text
+	// "github.com/tiktoken-go/tokenizer" // Keep ONLY if needed elsewhere, removed from summarization logic
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"github.com/tiktoken-go/tokenizer" // Keep for token counting
-	// REMOVED: context, errors, os, openai, genai, option - no longer needed here
 )
 
 // --- Constants ---
 const (
-	tokenThreshold       = 10 // Summarize if *original* text exceeds this many tokens (Adjust as needed)
-	defaultChatID        = 1   // Assume a default chat ID for simplicity
-	tokenizerModel       = tokenizer.Cl100kBase // Tokenizer encoding constant
-	maxLogTextLen        = 100 // Max length of text to log initially
-	// REMOVED: placeholderSummaryPrefix
+	// NEW: Threshold based on total chat CHARACTER length in DB
+	totalChatCharThreshold = 1000 // Example: Summarize if total chat exceeds 1000 characters. Adjust as needed!
+
+	defaultChatID = 1    // Assume a default chat ID for simplicity
+	maxLogTextLen = 100  // Max length of text to log initially
+	// REMOVED: tokenThreshold, tokenizerModel (unless needed elsewhere)
 )
 
 // TranscriptPayload defines the structure for incoming transcript data
@@ -46,28 +45,15 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 	r.Get("/", s.HelloWorldHandler)
 	r.Post("/text", s.handleTranscript)
-	r.Get("/health", s.healthHandler) // Keep existing health handler
-
-	// Add a health check specific to the summarizer service
+	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
 
 	return r
 }
 
-// countTokens estimates the number of tokens in a text using the provided tokenizer.Encoding.
-func countTokens(text string, encoding tokenizer.Encoding) (int, error) {
-	enc, err := tokenizer.Get(encoding)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get tokenizer encoding '%s': %w", encoding, err)
-	}
-	ids, _, err := enc.Encode(text)
-	if err != nil {
-		return 0, fmt.Errorf("tokenization error: %w", err)
-	}
-	return len(ids), nil
-}
+// REMOVED: countTokens function (no longer drives summarization)
+// func countTokens(text string, encoding tokenizer.Encoding) (int, error) { ... }
 
-// REMOVED: summarizeText, summarizeWithOpenAI, summarizeWithGemini placeholder functions
 
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]string{"message": "Hello World"}
@@ -85,7 +71,6 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	// Trim whitespace from incoming text just in case
 	payload.Text = strings.TrimSpace(payload.Text)
 
 	if payload.Speaker == "" || payload.Text == "" {
@@ -94,21 +79,26 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Timestamp parsing logic (remains the same)
 	var parsedTimestamp time.Time
 	if payload.Timestamp != "" {
 		var err error
-		// Try parsing common formats, including RFC3339
-		parsedTimestamp, err = time.Parse(time.RFC3339Nano, payload.Timestamp) // Try with nanoseconds first
-        if err != nil {
-             parsedTimestamp, err = time.Parse(time.RFC3339, payload.Timestamp) // Fallback to RFC3339
-        }
+		// Try parsing common formats, including RFC3339 with potential variations
+		formats := []string{time.RFC3339Nano, time.RFC3339, time.RFC1123Z, time.RFC1123, time.UnixDate}
+		for _, format := range formats {
+			parsedTimestamp, err = time.Parse(format, payload.Timestamp)
+			if err == nil {
+				break // Success
+			}
+		}
 		if err != nil {
-			log.Printf("Could not parse provided timestamp '%s' with RFC3339/Nano: %v. Defaulting to current time.", payload.Timestamp, err)
+			log.Printf("Could not parse provided timestamp '%s' with common formats: %v. Defaulting to current time.", payload.Timestamp, err)
 			parsedTimestamp = time.Now().UTC()
 		}
 	} else {
 		parsedTimestamp = time.Now().UTC()
 	}
+
 
 	logTextPreview := payload.Text
 	if len(logTextPreview) > maxLogTextLen {
@@ -121,48 +111,9 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		len(payload.Text),
 	)
 
-	// --- Summarization Logic ---
-	var summary *string // Use pointer to distinguish between empty summary and no summary attempt
-	var summaryError error
-	summarized := false // Flag to indicate if summarization was attempted and successful
-
-	tokenCount, err := countTokens(payload.Text, tokenizerModel)
-	if err != nil {
-		log.Printf("Error counting tokens for speaker '%s': %v. Skipping summarization attempt.", payload.Speaker, err)
-		tokenCount = -1 // Indicate token counting failed
-	} else {
-		log.Printf("Text from '%s' contains approx %d tokens.", payload.Speaker, tokenCount)
-		if tokenCount > tokenThreshold {
-			log.Printf("Token count (%d) exceeds threshold (%d). Attempting summarization using provider: %T", tokenCount, tokenThreshold, s.smrz)
-
-			startTime := time.Now()
-			// *** USE THE INJECTED SUMMARIZER SERVICE ***
-			generatedSummary, errSummarize := s.smrz.Summarize(r.Context(), payload.Text)
-			duration := time.Since(startTime)
-
-			if errSummarize != nil {
-				log.Printf("Error summarizing text for speaker '%s' (provider: %T, duration: %v): %v. Original text will be saved without summary.",
-					payload.Speaker, s.smrz, duration, errSummarize)
-				summaryError = errSummarize // Store the error maybe for response?
-			} else if strings.TrimSpace(generatedSummary) == "" {
-                log.Printf("Summarization attempt for speaker '%s' resulted in an empty string (provider: %T, duration: %v). Saving original text without summary.",
-                    payload.Speaker, s.smrz, duration)
-                summaryError = fmt.Errorf("summarization resulted in empty string")
-            } else {
-				log.Printf("Summarization successful for speaker '%s' (provider: %T, duration: %v). Summary length: %d",
-					payload.Speaker, s.smrz, duration, len(generatedSummary))
-				// Assign the generated summary to the pointer
-				summary = &generatedSummary
-				summarized = true
-			}
-		} else {
-			log.Printf("Token count (%d) does not exceed threshold (%d). No summarization needed.", tokenCount, tokenThreshold)
-		}
-	}
-
-	// --- Database Interaction ---
+	// --- Database Interaction (Get User/Chat Info FIRST) ---
 	chatID := defaultChatID // Assuming default chat ID
-	ctx := r.Context() // Use request context
+	ctx := r.Context()      // Use request context
 
 	// 1. Ensure Chat Exists
 	if err := s.db.EnsureChatExists(ctx, chatID); err != nil {
@@ -181,58 +132,104 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Obtained userID %d for handle '%s'.", userID, payload.Speaker)
 
-	// 3. Save Chat Line (Original Text + Optional Summary)
-	// *** PASS BOTH original payload.Text AND the summary pointer ***
+	// --- Summarization Logic (Based on TOTAL chat length) ---
+	var summary *string // Use pointer to distinguish between empty summary and no summary attempt
+	var summaryError error
+	summarized := false // Flag to indicate if summarization was attempted and successful
+
+	// 3. Get Total Chat Length *BEFORE* saving the current line
+	totalChatLength, errDbLen := s.db.GetTotalChatLength(ctx, chatID)
+	if errDbLen != nil {
+		log.Printf("WARNING: Could not get total chat length for chat %d: %v. Skipping summarization check.", chatID, errDbLen)
+		// Proceed to save the line without attempting summarization
+	} else {
+		log.Printf("Current total chat length for chat %d is %d characters.", chatID, totalChatLength)
+
+		// 4. Decide whether to Summarize based on threshold
+		if totalChatLength > totalChatCharThreshold {
+			log.Printf("Total chat length (%d chars) exceeds threshold (%d). Attempting summarization using provider: %T",
+				totalChatLength, totalChatCharThreshold, s.smrz)
+
+			startTime := time.Now()
+			// *** USE THE INJECTED SUMMARIZER SERVICE ***
+			// Summarize the *CURRENT* payload's text
+			generatedSummary, errSummarize := s.smrz.Summarize(r.Context(), payload.Text)
+			duration := time.Since(startTime)
+
+			if errSummarize != nil {
+				log.Printf("Error summarizing text for speaker '%s' (provider: %T, duration: %v): %v. Original text will be saved without summary.",
+					payload.Speaker, s.smrz, duration, errSummarize)
+				summaryError = errSummarize
+			} else if strings.TrimSpace(generatedSummary) == "" {
+				log.Printf("Summarization attempt for speaker '%s' resulted in an empty string (provider: %T, duration: %v). Saving original text without summary.",
+					payload.Speaker, s.smrz, duration)
+				summaryError = fmt.Errorf("summarization resulted in empty string")
+			} else {
+				log.Printf("Summarization successful for speaker '%s' (provider: %T, duration: %v). Summary length: %d",
+					payload.Speaker, s.smrz, duration, len(generatedSummary))
+				summary = &generatedSummary // Assign the generated summary
+				summarized = true
+			}
+		} else {
+			log.Printf("Total chat length (%d chars) does not exceed threshold (%d). No summarization needed for this message.",
+				totalChatLength, totalChatCharThreshold)
+		}
+	}
+
+	// 5. Save Chat Line (Original Text + Optional Summary)
+	// This happens regardless of whether summarization occurred
 	if err := s.db.SaveChatLine(ctx, chatID, userID, payload.Text, summary, parsedTimestamp); err != nil {
 		log.Printf("CRITICAL: Error saving chat line (user %d, chat %d): %v", userID, chatID, err)
 		http.Error(w, "Internal Server Error (DB Save)", http.StatusInternalServerError)
 		return
 	}
+
 	if summarized {
 		log.Printf("Successfully saved chat line with original text and summary for user %d.", userID)
-	} else {
-		log.Printf("Successfully saved chat line with original text (no summary generated or saved) for user %d.", userID)
+	} else if summaryError != nil {
+		log.Printf("Successfully saved chat line with original text for user %d (summarization attempted but failed).", userID)
+	} else if errDbLen == nil && totalChatLength <= totalChatCharThreshold {
+ 		log.Printf("Successfully saved chat line with original text for user %d (summarization not required based on total chat length).", userID)
+	} else if errDbLen != nil {
+		log.Printf("Successfully saved chat line with original text for user %d (summarization skipped due to error checking chat length).", userID)
+ 	} else {
+		// Fallback case, should ideally be covered above
+		log.Printf("Successfully saved chat line with original text for user %d (no summary generated/saved).", userID)
 	}
+
 
 	// --- Response ---
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	response := map[string]string{"message": "Transcript received and processed successfully."}
+
+	// Update response status based on the new logic
 	if summarized {
-		response["summary_status"] = "Generated and saved"
+		response["summary_status"] = "Generated and saved (total chat length exceeded threshold)"
 	} else if summaryError != nil {
-        response["summary_status"] = fmt.Sprintf("Attempted but failed: %v", summaryError)
-    } else if tokenCount > tokenThreshold {
-		response["summary_status"] = "Attempted but failed silently or produced empty result" // Should be caught by summaryError generally
-	} else if tokenCount != -1 {
-        response["summary_status"] = "Not required (below token threshold)"
-    } else {
-		response["summary_status"] = "Not attempted (token count error)"
+		response["summary_status"] = fmt.Sprintf("Attempted (total chat length exceeded threshold) but failed: %v", summaryError)
+	} else if errDbLen == nil && totalChatLength <= totalChatCharThreshold {
+		response["summary_status"] = fmt.Sprintf("Not required (total chat length %d <= threshold %d)", totalChatLength, totalChatCharThreshold)
+	} else if errDbLen != nil {
+		response["summary_status"] = "Not attempted (error checking total chat length)"
+	} else {
+		// Fallback, should ideally not be reached if logic above is sound
+		response["summary_status"] = "Not generated (reason unclear)"
 	}
 
-	// Optionally include token count info
-	response["token_count_estimate"] = fmt.Sprintf("%d", tokenCount)
-	if tokenCount > tokenThreshold {
-		response["token_threshold"] = fmt.Sprintf("%d (Exceeded)", tokenThreshold)
-	} else if tokenCount != -1 {
-		response["token_threshold"] = fmt.Sprintf("%d (Not Exceeded)", tokenThreshold)
-	} else {
-		response["token_threshold"] = fmt.Sprintf("%d (N/A)", tokenThreshold)
-	}
+	// Include length info in response for debugging/info
+	response["current_total_chat_length_chars"] = fmt.Sprintf("%d", totalChatLength)
+	response["summarization_char_threshold"] = fmt.Sprintf("%d", totalChatCharThreshold)
 
 
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-// Existing health handler for the database
+// Existing health handlers (remain the same)
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
-	healthStats := s.db.Health() // Assuming this only checks DB health
+	healthStats := s.db.Health()
 	w.Header().Set("Content-Type", "application/json")
-
-	// Combine DB and Summarizer health for overall status? Or keep separate?
-	// Let's keep the main /health focused on DB for now as originally designed.
 	isDbHealthy := healthStats["status"] == "up"
-
 	if !isDbHealthy {
 		w.WriteHeader(http.StatusInternalServerError)
 	} else {
@@ -241,13 +238,10 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(healthStats)
 }
 
-// New health handler specifically for the summarizer service
 func (s *Server) summarizerHealthHandler(w http.ResponseWriter, r *http.Request) {
-	healthStats := s.smrz.Health() // Call the Health method on the injected summarizer
+	healthStats := s.smrz.Health()
 	w.Header().Set("Content-Type", "application/json")
-
-	isSummarizerHealthy := healthStats["status"] == "ok" // Assuming "ok" is the healthy status
-
+	isSummarizerHealthy := healthStats["status"] == "ok"
 	if !isSummarizerHealthy {
 		w.WriteHeader(http.StatusInternalServerError)
 	} else {
