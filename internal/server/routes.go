@@ -31,9 +31,9 @@ type TranscriptPayload struct {
 }
 
 type sseMessage struct {
-	ToolID     string `json:"role"`
-	ToolAnswer string `json:"text"`
-	ToolType   string `json:"text"`
+	ToolID     string `json:"id"`
+	ToolAnswer string `json:"answer"`
+	ToolType   string `json:"type"`
 }
 
 func (s *Server) RegisterRoutes() http.Handler {
