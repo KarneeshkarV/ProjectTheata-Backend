@@ -31,8 +31,9 @@ type TranscriptPayload struct {
 }
 
 type sseMessage struct {
-	Role string `json:"role"`
-	Text string `json:"text"`
+	ToolID     string `json:"role"`
+	ToolAnswer string `json:"text"`
+	ToolType   string `json:"text"`
 }
 
 func (s *Server) RegisterRoutes() http.Handler {
@@ -98,8 +99,9 @@ func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
 		case <-t.C:
 			// 1. Build the payload
 			msg := sseMessage{
-				Role: "system",
-				Text: "it works ?",
+				ToolID:     "123",
+				ToolAnswer: "Test",
+				ToolType:   "DR",
 			}
 			payload, err := json.Marshal(msg)
 			if err != nil {
