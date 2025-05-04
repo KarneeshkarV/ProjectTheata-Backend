@@ -2,7 +2,7 @@ package server
 
 import (
 	"encoding/json"
-	_ "fmt"
+	"fmt"
 	"github.com/tiktoken-go/tokenizer"
 	"log"
 	"net/http"
@@ -30,6 +30,11 @@ type TranscriptPayload struct {
 	Timestamp string `json:"timestamp"` // Received as string, allows flexible input format
 }
 
+type sseMessage struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
+
 func (s *Server) RegisterRoutes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -46,7 +51,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 	r.Post("/text", s.handleTranscript)
 	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
-
+	r.Get("/sse", s.SseHandler)
 	return r
 }
 
@@ -69,7 +74,54 @@ func countTokens(text string) (int, error) {
 	toks, _, _ := enc.Encode(text)
 	return len(toks), nil
 }
+func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
+	// Set http headers required for SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 
+	// You may need this locally for CORS requests
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Create a channel for client disconnection
+	clientGone := r.Context().Done()
+
+	rc := http.NewResponseController(w)
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-clientGone:
+			fmt.Println("Client disconnected")
+			return
+
+		case <-t.C:
+			// 1. Build the payload
+			msg := sseMessage{
+				Role: "system",
+				Text: "it works ?",
+			}
+			payload, err := json.Marshal(msg)
+			if err != nil {
+				continue // or log & continue
+			}
+
+			// 2. Emit a *complete* SSE frame:
+			//
+			//    event: chat_message
+			//    data: {"role":"system","text":"it works ?"}
+			//
+			//    <blank line>
+			//
+			fmt.Fprintf(w, "event: chat_message\ndata: %s\n\n", payload)
+
+			// 3. Flush so the browser receives it immediately
+			if err := rc.Flush(); err != nil {
+				return // client likely gone
+			}
+		}
+	}
+}
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	var payload TranscriptPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
