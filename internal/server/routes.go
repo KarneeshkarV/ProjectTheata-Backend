@@ -34,6 +34,7 @@ type sseMessage struct {
 	ToolID     string `json:"id"`
 	ToolAnswer string `json:"answer"`
 	ToolType   string `json:"type"`
+	ToolStatus bool   `json:"status"`
 }
 
 func (s *Server) RegisterRoutes() http.Handler {
@@ -88,7 +89,7 @@ func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
 	clientGone := r.Context().Done()
 
 	rc := http.NewResponseController(w)
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(time.Second * 10)
 	defer t.Stop()
 	for {
 		select {
@@ -97,11 +98,12 @@ func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
 			return
 
 		case <-t.C:
-			// 1. Build the payload
+			answer := "<answerFromTool>*California Poppy:* This is an herb with sedative and anxiolytic properties. Unlike the opium poppy, California poppy (Eschscholzia californica) contains different alkaloids (like californidine) that have mild calming effects. There is sparse scientific research on California poppy alone, but it has traditionally been used for **insomnia and anxiety** in herbal medicine. One study of a combination formula (California poppy plus magnesium and hawthorn) found it helped reduce anxiety and improve sleep in mild-to-moderate generalized anxiety disorder. In Ferriss’s context, a few drops of tincture likely serve to ease pre-sleep tension. The evidence is limited, but the risk is low – California poppy is not addictive and doesn’t contain morphine or codeine. It’s more of a folk remedy with some pharmacological basis (it binds to GABA receptors weakly). Practically, it can help people *relax* into sleep, complementing melatonin which is more about the circadian signal.</answerFromTool>"
 			msg := sseMessage{
 				ToolID:     "123",
-				ToolAnswer: "Test",
+				ToolAnswer: answer,
 				ToolType:   "DR",
+				ToolStatus: true,
 			}
 			payload, err := json.Marshal(msg)
 			if err != nil {
