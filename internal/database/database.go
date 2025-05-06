@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings" // Import strings package
@@ -43,7 +44,7 @@ type Service interface {
 	GetChatHistory(ctx context.Context, chatID int) ([]ChatLine, error)
 	// NEW: Method to update chat summary
 	UpdateChatSummary(ctx context.Context, chatID int, summary string) error
-	GetAllChatLinesText(ctx context.Context, chatid int) (string ,error)
+	GetAllChatLinesText(ctx context.Context, chatid int) (string, error)
 }
 
 type service struct {
@@ -66,7 +67,15 @@ func New() Service {
 	if dbInstance != nil {
 		return dbInstance
 	}
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s", username, password, host, port, database, schema)
+	connStr := fmt.Sprintf(
+		"postgresql://%s:%s@%s:%s/%s?sslmode=require", // Supabase expects SSL
+		username,
+		url.QueryEscape(password), // escape any special chars in the password
+		host,
+		port,
+		database,
+	)
+	//connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", username, password, host, port, database)
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		log.Fatal(err)
