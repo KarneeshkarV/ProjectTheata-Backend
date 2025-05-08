@@ -62,11 +62,12 @@ var (
 )
 
 // --- New() function remains the same ---
+
 func New() Service {
-	// Reuse Connection
 	if dbInstance != nil {
 		return dbInstance
 	}
+
 	connStr := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=require&search_path=%s",
 		username,
@@ -74,53 +75,43 @@ func New() Service {
 		host,
 		port,
 		database,
-		schema,
+		url.QueryEscape(schema),
 	)
-	/* connStr := fmt.Sprintf(*/
-	/*"postgresql://%s:%s@%s:%s/%s?sslmode=require", // Supabase expects SSL*/
-	/*username,*/
-	/*url.QueryEscape(password), // escape any special chars in the password*/
-	/*host,*/
-	/*port,*/
-	/*database,*/
-	/*)*/
-	//connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", username, password, host, port, database)
+
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Schema check and creation logic... (remains the same)
-	checkSchemaQuery := `SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)`
+	// now you can check/create your schema as before...
+	checkSchemaQuery := `
+      SELECT EXISTS(
+        SELECT 1 FROM information_schema.schemata
+         WHERE schema_name = $1
+      )
+    `
 	var exists bool
-	err = db.QueryRow(checkSchemaQuery, schema).Scan(&exists)
-	if err != nil {
+	if err := db.QueryRow(checkSchemaQuery, schema).Scan(&exists); err != nil {
 		log.Fatalf("Failed to check if schema '%s' exists: %v", schema, err)
 	}
 	if !exists && schema != "" && schema != "public" {
 		log.Printf("Schema '%s' does not exist. Creating...", schema)
-		_, err = db.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema))
-		if err != nil {
+		if _, err := db.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema)); err != nil {
 			log.Fatalf("Failed to create schema '%s': %v", schema, err)
 		}
 		log.Printf("Schema '%s' created successfully.", schema)
 	}
 
 	log.Println("Applying database migrations...")
-	err = MigrateFs(db, migrations.FS, ".") // Use the embedded FS
-	if err != nil {
-		// Attempt to log status before panicking if MigrateFs fails
+	if err := MigrateFs(db, migrations.FS, "."); err != nil {
 		if statusErr := MigrateStatus(db, "."); statusErr != nil {
 			log.Printf("Additionally failed to get migration status: %v", statusErr)
 		}
 		log.Panicf("Migration error during New(): %v", err)
-	} else {
-		log.Println("Database migrations applied successfully.")
 	}
+	log.Println("Database migrations applied successfully.")
 
-	dbInstance = &service{
-		db: db,
-	}
+	dbInstance = &service{db: db}
 	return dbInstance
 }
 
