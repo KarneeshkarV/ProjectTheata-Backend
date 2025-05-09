@@ -1,16 +1,13 @@
 package server
 
 import (
-	"backend/internal/paddle"
 	"encoding/json"
 	"fmt"
+	"github.com/tiktoken-go/tokenizer"
 	"log"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/tiktoken-go/tokenizer"
-
 	// "github.com/tiktoken-go/tokenizer" // Keep ONLY if needed elsewhere, removed from summarization logic
 
 	"github.com/go-chi/chi/v5"
@@ -57,8 +54,6 @@ func (s *Server) RegisterRoutes() http.Handler {
 	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
 	r.Get("/sse", s.SseHandler)
-
-	r.Post("/paddle", s.PaddleWebook)
 	return r
 }
 
@@ -276,7 +271,4 @@ func (s *Server) summarizerHealthHandler(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusOK)
 	}
 	_ = json.NewEncoder(w).Encode(healthStats)
-}
-func (s *Server) PaddleWebook(w http.ResponseWriter, r *http.Request) {
-	paddle.WebhookHandler(w, r)
 }
