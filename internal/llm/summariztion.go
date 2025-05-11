@@ -4,14 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/sashabaranov/go-openai"
+	//"golang.org/x/tools/go/cfg"
+
 	"log"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/sashabaranov/go-openai"
-	"google.golang.org/api/aiplatform/v1"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 )
 
 // Summarizer defines the interface for text summarization services.
@@ -28,14 +30,14 @@ type Config struct {
 	Provider     string // e.g., "dummy", "openai", "gemini"
 	OpenAIAPIKey string
 	GeminiAPIKey string
-	MaxTokens    int    // Max tokens for the output summary
+	MaxTokens    int     // Max tokens for the output summary
 	Temperature  float32 // Control randomness (0.0-1.0)
-	Model        string // Optional model specification
+	Model        string  // Optional model specification
 }
 
 // LoadConfig loads summarizer configuration from environment variables.
 func LoadConfig() Config {
-	maxTokens := 1000// Default value
+	maxTokens := 1000 // Default value
 	if os.Getenv("SUMMARIZER_MAX_TOKENS") != "" {
 		fmt.Sscanf(os.Getenv("SUMMARIZER_MAX_TOKENS"), "%d", &maxTokens)
 	}
@@ -134,13 +136,13 @@ type OpenAISummarizer struct {
 func NewOpenAISummarizer(cfg Config) (*OpenAISummarizer, error) {
 	// Initialize OpenAI client
 	client := openai.NewClient(cfg.OpenAIAPIKey)
-	
+
 	// Set default model if not provided
 	model := cfg.Model
 	if model == "" {
 		model = "gpt-4o" // Default to a modern model
 	}
-	
+
 	return &OpenAISummarizer{
 		client:      client,
 		maxTokens:   cfg.MaxTokens,
@@ -151,10 +153,10 @@ func NewOpenAISummarizer(cfg Config) (*OpenAISummarizer, error) {
 
 func (o *OpenAISummarizer) Summarize(ctx context.Context, text string) (string, error) {
 	log.Println("[OpenAI Summarizer] Calling OpenAI API...")
-	
+
 	// Construct prompt for summarization
 	prompt := "Please provide a concise summary of the following text:\n\n" + text
-	
+
 	// Create completion request
 	req := openai.ChatCompletionRequest{
 		Model: o.model,
@@ -167,22 +169,22 @@ func (o *OpenAISummarizer) Summarize(ctx context.Context, text string) (string, 
 		MaxTokens:   o.maxTokens,
 		Temperature: o.temperature,
 	}
-	
+
 	// Make API call
 	resp, err := o.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		log.Printf("[OpenAI Summarizer] Error: %v", err)
 		return "", fmt.Errorf("OpenAI API error: %w", err)
 	}
-	
+
 	// Extract summary from response
 	if len(resp.Choices) == 0 {
 		return "", errors.New("OpenAI returned empty response")
 	}
-	
+
 	summary := resp.Choices[0].Message.Content
 	summary = strings.TrimSpace(summary)
-	
+
 	log.Printf("[OpenAI Summarizer] Summary generated (length: %d).", len(summary))
 	return summary, nil
 }
@@ -197,7 +199,7 @@ func (o *OpenAISummarizer) Health() map[string]string {
 			"message":  "Client not initialized",
 		}
 	}
-	
+
 	return map[string]string{
 		"provider": "OpenAI",
 		"status":   "ok",
@@ -209,10 +211,7 @@ func (o *OpenAISummarizer) Health() map[string]string {
 // --- Gemini Implementation ---
 
 type GeminiSummarizer struct {
-	apiKey      string
-	client      *aiplatform.ProjectsLocationsPublishersModelsService
-	projectID   string
-	location    string
+	client      *genai.Client
 	maxTokens   int
 	temperature float32
 	model       string
@@ -220,35 +219,22 @@ type GeminiSummarizer struct {
 
 func NewGeminiSummarizer(cfg Config) (*GeminiSummarizer, error) {
 	ctx := context.Background()
-	
-	// Set up the AI Platform client
-	aiClient, err := aiplatform.NewService(ctx, option.WithAPIKey(cfg.GeminiAPIKey))
+
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  cfg.GeminiAPIKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AI Platform client: %w", err)
+		return nil, err
 	}
-	
-	// Set default model if not provided
+
 	model := cfg.Model
 	if model == "" {
-		model = "gemini-1.5-pro" // Default model
+		model = "gemini-2.0-flash" // Default Gemini model
 	}
-	
-	// Default project and location
-	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
-	if projectID == "" {
-		projectID = "your-project-id" // Should be configured properly in production
-	}
-	
-	location := os.Getenv("GOOGLE_CLOUD_LOCATION")
-	if location == "" {
-		location = "us-central1" // Default location
-	}
-	
+
 	return &GeminiSummarizer{
-		apiKey:      cfg.GeminiAPIKey,
-		client:      aiClient.Projects.Locations.Publishers.Models,
-		projectID:   projectID,
-		location:    location,
+		client:      client,
 		maxTokens:   cfg.MaxTokens,
 		temperature: cfg.Temperature,
 		model:       model,
@@ -257,99 +243,19 @@ func NewGeminiSummarizer(cfg Config) (*GeminiSummarizer, error) {
 
 func (g *GeminiSummarizer) Summarize(ctx context.Context, text string) (string, error) {
 	log.Println("[Gemini Summarizer] Calling Gemini API...")
-	
-	// Prepare the content message
-	instance := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"text": "Please provide a concise summary of the following text:\n\n" + text,
-					},
-				},
-			},
-		},
-	}
-	
-	// Prepare the request parameters
-	parameters := map[string]interface{}{
-		"temperature":     g.temperature,
-		"maxOutputTokens": g.maxTokens,
-		"topK":            40,
-		"topP":            0.95,
-	}
-	
-	// Create the request body
-	// Convert the instances to interface slice
-	instanceInterface := make([]interface{}, 1)
-	instanceInterface[0] = instance
-	
-	requestBody := &aiplatform.GoogleCloudAiplatformV1PredictRequest{
-		Instances:  instanceInterface,
-		Parameters: parameters,
-	}
-	
-	// Create the model name string format
-	modelName := fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s", 
-		g.projectID, g.location, g.model)
-	
-	// Make the prediction request
-	request := g.client.Predict(modelName, requestBody)
-	response, err := request.Context(ctx).Do()
+
+	// Prepare the prompt
+	prompt := "Please provide a concise summary of the following text:\n\n" + text
+
+	// Prepare the request
+
+	var config *genai.GenerateContentConfig = &genai.GenerateContentConfig{Temperature: genai.Ptr[float32](0)}
+	client := g.client
+	summary, err := client.Models.GenerateContent(ctx, g.model, genai.Text(prompt), config)
 	if err != nil {
-		log.Printf("[Gemini Summarizer] Error: %v", err)
-		return "", fmt.Errorf("Gemini API error: %w", err)
+		return "", err
 	}
-	
-	// Extract the summary from the response
-	// This depends on the exact structure of the Gemini API response
-	// The following is a simplified example - adjust according to actual response structure
-	predictions := response.Predictions
-	if len(predictions) == 0 {
-		return "", errors.New("Gemini returned empty response")
-	}
-	
-	// Extract text from the response
-	// Note: This structure might need adjustment based on actual Gemini API response
-	predictionMap, ok := predictions[0].(map[string]interface{})
-	if !ok {
-		return "", errors.New("unexpected response format from Gemini API")
-	}
-	
-	contentsList, ok := predictionMap["candidates"].([]interface{})
-	if !ok || len(contentsList) == 0 {
-		return "", errors.New("couldn't find content in Gemini API response")
-	}
-	
-	candidateMap, ok := contentsList[0].(map[string]interface{})
-	if !ok {
-		return "", errors.New("invalid candidate format in Gemini API response")
-	}
-	
-	contentMap, ok := candidateMap["content"].(map[string]interface{})
-	if !ok {
-		return "", errors.New("invalid content format in Gemini API response")
-	}
-	
-	parts, ok := contentMap["parts"].([]interface{})
-	if !ok || len(parts) == 0 {
-		return "", errors.New("couldn't find parts in Gemini API response")
-	}
-	
-	partMap, ok := parts[0].(map[string]interface{})
-	if !ok {
-		return "", errors.New("invalid part format in Gemini API response")
-	}
-	
-	summary, ok := partMap["text"].(string)
-	if !ok {
-		return "", errors.New("couldn't extract text from Gemini API response")
-	}
-	
-	summary = strings.TrimSpace(summary)
-	log.Printf("[Gemini Summarizer] Summary generated (length: %d).", len(summary))
-	return summary, nil
+	return summary.Text(), nil
 }
 
 func (g *GeminiSummarizer) Health() map[string]string {
@@ -361,12 +267,13 @@ func (g *GeminiSummarizer) Health() map[string]string {
 			"message":  "Client not initialized",
 		}
 	}
-	
+
 	return map[string]string{
 		"provider": "Gemini",
 		"status":   "ok",
 		"model":    g.model,
-		"location": g.location,
-		"message":  "Client initialized properly",
+
+		"message": "Client initialized properly",
 	}
 }
+
