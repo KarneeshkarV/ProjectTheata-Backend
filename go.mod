@@ -12,7 +12,6 @@ require (
 	github.com/testcontainers/testcontainers-go v0.37.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.37.0
 	github.com/tiktoken-go/tokenizer v0.6.1
-	golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d
 	google.golang.org/genai v1.4.0
 	gotest.tools/v3 v3.5.1
 )
