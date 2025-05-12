@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os/signal"
@@ -577,6 +574,8 @@ func gracefulShutdown(srv *http.Server, done chan bool) {
 		log.Printf("Server forced to shutdown with error: %v", err)
 	}
 	log.Println("Server exiting")
+
+	// Notify the main goroutine that the shutdown is complete
 	done <- true
 }
 
