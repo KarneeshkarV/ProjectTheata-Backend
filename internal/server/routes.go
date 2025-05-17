@@ -89,7 +89,7 @@ func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
 	clientGone := r.Context().Done()
 
 	rc := http.NewResponseController(w)
-	t := time.NewTicker(time.Second * 10)
+	t := time.NewTicker(time.Second * 30)
 	defer t.Stop()
 	for {
 		select {
@@ -103,7 +103,7 @@ func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
 				ToolID:     "123",
 				ToolAnswer: answer,
 				ToolType:   "DR",
-				ToolStatus: true,
+				ToolStatus: false,
 			}
 			payload, err := json.Marshal(msg)
 			if err != nil {
