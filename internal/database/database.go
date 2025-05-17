@@ -69,7 +69,7 @@ func New() Service {
 	}
 
 	connStr := fmt.Sprintf(
-		"postgresql://%s:%s@%s:%s/%s?sslmode=require&search_path=%s",
+		"postgres://%s:%s@%s:%s/%s?sslmode=require&search_path=public&prefer_simple_protocol=true",
 		username,
 		url.QueryEscape(password),
 		host,
