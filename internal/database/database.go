@@ -69,20 +69,22 @@ func New() Service {
 	}
 
 	connStr := fmt.Sprintf(
-		"postgres://%s:%s@%s:%s/%s?sslmode=require&search_path=public&prefer_simple_protocol=true",
+		"postgres://%s:%s@%s:%s/%s?sslmode=require&search_path=public",
 		username,
 		url.QueryEscape(password),
 		host,
 		port,
 		database,
-		url.QueryEscape(schema),
+		//url.QueryEscape(schema),
 	)
 
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	if _, err := db.Exec(`SET statement_timeout = 0`); err != nil {
+		log.Fatalf("could not clear statement_timeout: %v", err)
+	}
 	// now you can check/create your schema as before...
 	checkSchemaQuery := `
       SELECT EXISTS(
