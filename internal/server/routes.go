@@ -83,8 +83,9 @@ func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	// You may need this locally for CORS requests
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	w.Header().Set("Access-Control-Allow-Origin", "https://projecttheata-frontend.onrender.com")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	// Create a channel for client disconnection
 	clientGone := r.Context().Done()
 
