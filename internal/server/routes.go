@@ -103,7 +103,7 @@ func (s *Server) SseHandler(w http.ResponseWriter, r *http.Request) {
 				ToolID:     "123",
 				ToolAnswer: answer,
 				ToolType:   "DR",
-				ToolStatus: true,
+				ToolStatus: false,
 			}
 			payload, err := json.Marshal(msg)
 			if err != nil {
