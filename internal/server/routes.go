@@ -3,16 +3,16 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/tiktoken-go/tokenizer"
-	"log"
-	"net/http"
-	"strings"
-	"time"
-	// "github.com/tiktoken-go/tokenizer" // Keep ONLY if needed elsewhere, removed from summarization logic
-
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/tiktoken-go/tokenizer"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 )
 
 // --- Constants ---
@@ -50,6 +50,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 	}))
 
 	r.Get("/", s.HelloWorldHandler)
+	r.Get("/wolf", s.WolfFromAlpha)
 	r.Post("/text", s.handleTranscript)
 	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
@@ -59,7 +60,68 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 // REMOVED: countTokens function (no longer drives summarization)
 // func countTokens(text string, encoding tokenizer.Encoding) (int, error) { ... }
+func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
+	// Ensure the request method is GET.
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
+	input := r.URL.Query().Get("input")
+	if input == "" {
+		http.Error(w, "Missing 'input' query param", http.StatusBadRequest)
+		return
+	}
+
+	// Build the URL with proper params
+	baseURL := "https://api.wolframalpha.com/v2/query"
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		log.Printf("Failed to parse base URL: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	params := url.Values{}
+	params.Set("appid", "TEWJ4U-U775T2KH95")
+	params.Set("input", input)
+	params.Set("output", "json")
+	params.Set("format", "plaintext") // Requesting plaintext for simpler JSON parsing if needed later
+	u.RawQuery = params.Encode()
+
+	// Make the GET request
+	resp, err := http.Get(u.String())
+	if err != nil {
+		log.Printf("WolframAlpha API request error: %v", err)
+		http.Error(w, "Error querying WolframAlpha", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read response body: %v", err)
+		http.Error(w, "Error reading response", http.StatusInternalServerError)
+		return
+	}
+
+	// Check for non-OK status codes after reading the body
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("WolframAlpha API returned status %d: %s", resp.StatusCode, string(body))
+		// Try to provide a more informative error message if possible
+		http.Error(w, fmt.Sprintf("API error: %s - %s", resp.Status, string(body)), resp.StatusCode)
+		return
+	}
+
+	// Set the content type to JSON and write the response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write(body)
+	if err != nil {
+		log.Printf("Failed to write response: %v", err)
+		// If we can't write the response, there isn't much we can do.
+	}
+}
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]string{"message": "Hello World"}
 	w.Header().Set("Content-Type", "application/json")
