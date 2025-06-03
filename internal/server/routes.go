@@ -761,13 +761,34 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusServiceUnavailable, "Error contacting ADK agent to ensure session for task: "+err.Error())
 		return
 	}
-	defer adkSessionResp.Body.Close() // Close the body for this specific request
+	// Read the body for potential error message checking
+	sessionRespBodyBytes, readErr := io.ReadAll(adkSessionResp.Body)
+	if readErr != nil {
+		adkSessionResp.Body.Close() // Close original body if read fails
+		log.Printf("Failed to read ADK session response body for task. ADK Status: %d. Error: %v", adkSessionResp.StatusCode, readErr)
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to read ADK session response for task. ADK Status: %d", adkSessionResp.StatusCode))
+		return
+	}
+	adkSessionResp.Body.Close() // Close original body now that it's read
 
-	// Check if session creation/check was successful (200 OK, 201 Created, or 409 Conflict if already exists)
-	if !(adkSessionResp.StatusCode == http.StatusOK || adkSessionResp.StatusCode == http.StatusCreated || adkSessionResp.StatusCode == http.StatusConflict) {
-		sessionRespBodyBytes, _ := io.ReadAll(adkSessionResp.Body)
+	// Check status codes for "session ensured"
+	sessionEnsured := false
+	if adkSessionResp.StatusCode == http.StatusOK ||
+		adkSessionResp.StatusCode == http.StatusCreated ||
+		adkSessionResp.StatusCode == http.StatusConflict {
+		sessionEnsured = true
+	} else if adkSessionResp.StatusCode == http.StatusBadRequest {
+		if strings.Contains(string(sessionRespBodyBytes), "Session already exists") {
+			sessionEnsured = true
+			log.Printf("ADK session for task already exists (confirmed by 400 response with specific message) for ADK User %s, Session %s. Proceeding.", adkUserIDForTask, adkTaskSessionID)
+		}
+	}
+
+	if !sessionEnsured {
 		log.Printf("Failed to ensure ADK session for task. ADK Status: %d, Body: %s", adkSessionResp.StatusCode, string(sessionRespBodyBytes))
-		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to ensure ADK session for task. ADK Status: %d, Details: %s", adkSessionResp.StatusCode, string(sessionRespBodyBytes)))
+		w.Header().Set("Content-Type", "application/json") // Ensure JSON for error response
+		w.WriteHeader(adkSessionResp.StatusCode)          // Forward ADK's status code
+		w.Write(sessionRespBodyBytes)                      // Forward ADK's error body
 		return
 	}
 	log.Printf("ADK session ensured for task (Status: %d). Proceeding to set state and run.", adkSessionResp.StatusCode)
