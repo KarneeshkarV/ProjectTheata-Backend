@@ -80,18 +80,16 @@ func New() Service {
 	if dbInstance != nil {
 		return dbInstance
 	}
+
 	connStr := fmt.Sprintf(
-		"postgres://%s:%s@%s:%s/%s"+
-			"?sslmode=require"+
-			"&search_path=public"+
-			"&default_query_exec_mode=exec",
+		"postgresql://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s", // Changed sslmode for local dev, adjust if needed
 		username,
-		url.QueryEscape(password),
+		url.QueryEscape(password), // Ensure password is query escaped
 		host,
 		port,
 		database,
+		url.QueryEscape(schema), // Ensure schema name is query escaped if it contains special chars
 	)
-
 	log.Printf("Attempting to connect to database: postgresql://%s:***@%s:%s/%s?search_path=%s", username, host, port, database, schema)
 
 	db, err := sql.Open("pgx", connStr)
@@ -481,4 +479,3 @@ func (s *service) Close() error {
 
 // formatChatHistory and countTokens can remain if they are used by other parts,
 // but they are not directly related to the Google token storage.
-
