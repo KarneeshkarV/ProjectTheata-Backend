@@ -1,65 +1,82 @@
-// FILE: internal/server/server.go
 package server
 
 import (
+	"backend/internal/config"
+	"backend/internal/database"
+	"backend/internal/googleauth"
+	"backend/internal/llm" // Ensure this is the correct package name
 	"fmt"
-	"log" // Added log import
+	"log"
 	"net/http"
-	"os"
-	"strconv"
 	"time"
 
-	_ "github.com/joho/godotenv/autoload"
-
-	"backend/internal/database"
-	"backend/internal/llm"
+	_ "github.com/joho/godotenv/autoload" // Autoload .env
 )
 
 type Server struct {
-	port int
-	db   database.Service
-	smrz  summarizer.Summarizer
+	port            int
+	db              database.Service
+	smrz            summarizer.Summarizer // Corrected type name from thought process
+	googleAuthSvc   googleauth.Service
+	httpClient      *http.Client
+	sseClientMgr    *SSEClientManager // Corrected type name from thought process
+	cfg             *config.Config    // Store the config
 }
 
-func NewServer() *http.Server {
-	port, _ := strconv.Atoi(os.Getenv("PORT"))
-	if port == 0 {
-		port = 8080 // Default port if not set or invalid
-		log.Printf("PORT environment variable not set or invalid, defaulting to %d", port)
+func NewServer(cfg *config.Config) *http.Server { // cfg is passed in
+	dbService := database.New() // Initialize database service
+
+	// Initialize summarizer service
+	smrzCfg := summarizer.Config{ // Corrected struct name from thought process
+		Provider:     cfg.SummarizerProvider,
+		OpenAIAPIKey: cfg.SummarizerOpenAIAPIKey,
+		GeminiAPIKey: cfg.SummarizerGeminiAPIKey,
+		MaxTokens:    cfg.SummarizerMaxTokens,
+		Temperature:  cfg.SummarizerTemperature,
+		Model:        cfg.SummarizerModel,
 	}
-
-
-	dbService := database.New()
-
-	// --- ADDED: Initialize Summarizer ---
-	smrzCfg := summarizer.LoadConfig()
-	smrzService, err := summarizer.New(smrzCfg)
+	smrzService, err := summarizer.New(smrzCfg) // Corrected package.New from thought process
 	if err != nil {
-		// Decide how to handle summarizer initialization failure.
-		// Option 1: Fatal - The server cannot run without a summarizer.
 		log.Fatalf("Failed to initialize summarizer: %v", err)
-		// Option 2: Log and continue (summarization will fail later)
-		// log.Printf("WARNING: Failed to initialize summarizer: %v. Summarization will not work.", err)
-		// smrzService = &summarizer.DummySummarizer{ProviderName:"ErrorState"} // Fallback to a specific dummy
 	}
-	// --- END ADDED ---
 
+	// Initialize Google Auth Service
+	googleAuthService, err := googleauth.NewService(dbService, cfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize Google Auth service: %v", err)
+	}
 
+	// Initialize HTTP Client
+	httpClient := &http.Client{
+		Timeout: cfg.HttpClientTimeout, // Use timeout from config
+	}
+
+	// Initialize SSE Client Manager
+	// Pass retry interval and max clients from config
+	sseClientManager := NewSSEClientManager(cfg.SSEClientRetryInterval, cfg.SSEMaxClientsPerSession)
+	go sseClientManager.Run() // Run in a goroutine
+
+	// Create the server instance
 	newServer := &Server{
-		port: port,
-		db:   dbService,   // Use the initialized db service
-		smrz: smrzService, // ADDED: Assign summarizer service
+		port:            cfg.Port,
+		db:              dbService,
+		smrz:            smrzService,
+		googleAuthSvc:   googleAuthService,
+		httpClient:      httpClient,
+		sseClientMgr:    sseClientManager,
+		cfg:             cfg, // Store the config
 	}
 
-	// Declare Server config
+	// Configure HTTP server
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", newServer.port),
-		Handler:      newServer.RegisterRoutes(), // Pass the newServer instance with dependencies
+		Addr:         fmt.Sprintf(":%d", newServer.port), // Server will listen on cfg.Port
+		Handler:      newServer.RegisterRoutes(),         // Register routes
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
-	log.Printf("Server starting on port %d", newServer.port) // Added log
+	log.Printf("Server configured for port %d. Frontend URL: %s, ADK Agent URL: %s",
+		newServer.port, cfg.FrontendURL, cfg.ADKAgentBaseURL)
 	return server
 }
