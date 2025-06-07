@@ -122,6 +122,7 @@ func New() Service {
 				log.Fatalf("Failed to create schema '%s': %v", schema, err)
 			}
 			log.Printf("Schema '%s' created successfully.", schema)
+
 		}
 	} else {
 		log.Printf("Using default schema or schema is 'public', no schema creation check needed beyond search_path.")
