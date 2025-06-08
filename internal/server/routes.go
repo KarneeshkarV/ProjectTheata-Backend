@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"golang.org/x/oauth2/google"
-	"github.com/tiktoken-go/tokenizer"
+	//"github.com/tiktoken-go/tokenizer"
 	"io"
 	"log"
 	"net/http"
@@ -128,7 +128,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 	// CORS configuration
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"https://projecttheata-frontend.onrender.com"},
+		AllowedOrigins:   []string{"https://projecttheata-frontend.onrender.com", "http://localhost:3000"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
