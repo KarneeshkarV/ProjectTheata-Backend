@@ -167,7 +167,9 @@ func (s *Server) RegisterRoutes() http.Handler {
 		// Route for receiving transcripts (e.g., from frontend)
 		r.Post("/text", s.handleTranscript) // For logging transcripts
 	})
-
+	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	return r
 }
 
@@ -1133,4 +1135,3 @@ func SanitizeForID(input string) string {
 	}
 	return result.String()
 }
-
