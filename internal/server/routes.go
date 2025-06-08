@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	_ "github.com/tiktoken-go/tokenizer"
+	"github.com/tiktoken-go/tokenizer"
 	"golang.org/x/oauth2/google"
 	"io"
 	"log"
