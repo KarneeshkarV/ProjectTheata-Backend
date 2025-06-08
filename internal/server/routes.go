@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-  "github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/tiktoken-go/tokenizer"
 	"golang.org/x/oauth2/google"
-	//"github.com/tiktoken-go/tokenizer"
 	"io"
 	"log"
 	"net/http"
@@ -128,7 +128,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 	// CORS configuration
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"https://projecttheata-frontend.onrender.com", "http://localhost:3000"},
+		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
@@ -167,10 +167,11 @@ func (s *Server) RegisterRoutes() http.Handler {
 		// Route for receiving transcripts (e.g., from frontend)
 		r.Post("/text", s.handleTranscript) // For logging transcripts
 	})
-
+	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	return r
 }
-
 
 // REMOVED: countTokens function (no longer drives summarization)
 // func countTokens(text string, encoding tokenizer.Encoding) (int, error) { ... }
@@ -311,8 +312,8 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 
 // CreateSessionRequest defines the expected JSON from the frontend to create/join an ADK session
 type CreateSessionRequest struct {
-	UserID       string                 `json:"user_id"`       // Supabase User ID from frontend
-	SessionID    string                 `json:"session_id"`    // Desired ADK Session ID from frontend
+	UserID       string                 `json:"user_id"`         // Supabase User ID from frontend
+	SessionID    string                 `json:"session_id"`      // Desired ADK Session ID from frontend
 	InitialState map[string]interface{} `json:"state,omitempty"` // Optional initial state for ADK session
 }
 
@@ -342,11 +343,11 @@ type ADKNewMessage struct {
 
 // ADKRunPayload is the payload for the ADK agent's /run endpoint
 type ADKRunPayload struct {
-	AppName     string                 `json:"app_name"`             // ADK Application Name
-	UserID      string                 `json:"user_id"`              // User ID recognized by ADK
-	SessionID   string                 `json:"session_id"`           // Session ID for ADK
-	NewMessage  ADKNewMessage          `json:"new_message"`          // The message/query for the agent
-	Stream      bool                   `json:"stream,omitempty"`     // Whether to stream ADK response
+	AppName     string                 `json:"app_name"`               // ADK Application Name
+	UserID      string                 `json:"user_id"`                // User ID recognized by ADK
+	SessionID   string                 `json:"session_id"`             // Session ID for ADK
+	NewMessage  ADKNewMessage          `json:"new_message"`            // The message/query for the agent
+	Stream      bool                   `json:"stream,omitempty"`       // Whether to stream ADK response
 	AuthContext map[string]interface{} `json:"auth_context,omitempty"` // For passing Google tokens (REMOVED - will be set via state update)
 }
 
@@ -360,8 +361,8 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 	}
 	defer r.Body.Close()
 
-	supabaseUserID := req.UserID // User ID from frontend (Supabase)
-	adkSessionID := req.SessionID  // Session ID from frontend (for ADK)
+	supabaseUserID := req.UserID  // User ID from frontend (Supabase)
+	adkSessionID := req.SessionID // Session ID from frontend (for ADK)
 
 	if adkSessionID == "" {
 		respondWithError(w, http.StatusBadRequest, "ADK session_id is required to create/join a session")
@@ -622,16 +623,22 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 				}
 
 				var role, text, status string
-				role = "agent"; status = "OK"
+				role = "agent"
+				status = "OK"
 
 				if content, ok := adkStreamChunk["content"].(map[string]interface{}); ok {
 					if parts, okC := content["parts"].([]interface{}); okC && len(parts) > 0 {
 						if firstPart, okP := parts[0].(map[string]interface{}); okP {
-							if t, okT := firstPart["text"].(string); okT { text = t }
+							if t, okT := firstPart["text"].(string); okT {
+								text = t
+							}
 						}
 					}
 					if r, okR := content["role"].(string); okR {
-						role = r; if role == "model" { role = "agent" }
+						role = r
+						if role == "model" {
+							role = "agent"
+						}
 					}
 				} else if t, okT := adkStreamChunk["text"].(string); okT {
 					text = t
@@ -639,7 +646,8 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 					text = strContent
 				} else if errorField, okErr := adkStreamChunk["error"].(map[string]interface{}); okErr {
 					text = fmt.Sprintf("ADK Error: %v", errorField["message"])
-					role = "system_error"; status = "ERROR"
+					role = "system_error"
+					status = "ERROR"
 				}
 
 				if text != "" {
@@ -711,7 +719,7 @@ func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done(): // Client disconnected
 			log.Printf("SSE client disconnected (context done) for session: %s", sessionID)
 			return
-      
+
 		case event, open := <-clientChan:
 			if !open {
 				// Channel was closed by the manager (e.g., max clients reached for session, or manager shutting down)
@@ -744,9 +752,9 @@ func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request) {
 // handleAgentCommand (Example, if you want to send commands to ADK via Go backend's SSE)
 func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 	type CommandRequest struct {
-		SessionID string      `json:"session_id"`          // Target ADK session_id
-		UserID    string      `json:"user_id,omitempty"`   // Supabase User ID (optional, for logging/context)
-		Command   string      `json:"command"`             // The command name/type
+		SessionID string      `json:"session_id"`        // Target ADK session_id
+		UserID    string      `json:"user_id,omitempty"` // Supabase User ID (optional, for logging/context)
+		Command   string      `json:"command"`           // The command name/type
 		Payload   interface{} `json:"payload,omitempty"` // Command-specific data
 	}
 
@@ -787,10 +795,10 @@ func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	type TaskRequest struct {
-		UserID          string                 `json:"user_id,omitempty"`           // Supabase User ID
-		ToolName        string                 `json:"tool_name,omitempty"`       // Optional: specific tool to call
-		Parameters      map[string]interface{} `json:"parameters,omitempty"`      // Parameters for the tool
-		TextInstruction string                 `json:"text,omitempty"`            // Natural language instruction for the agent
+		UserID          string                 `json:"user_id,omitempty"`    // Supabase User ID
+		ToolName        string                 `json:"tool_name,omitempty"`  // Optional: specific tool to call
+		Parameters      map[string]interface{} `json:"parameters,omitempty"` // Parameters for the tool
+		TextInstruction string                 `json:"text,omitempty"`       // Natural language instruction for the agent
 	}
 	var taskReq TaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&taskReq); err != nil {
@@ -858,7 +866,7 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	if !sessionEnsured {
 		log.Printf("Failed to ensure ADK session for task. ADK Status: %d, Body: %s", adkSessionResp.StatusCode, string(sessionRespBodyBytes))
 		w.Header().Set("Content-Type", "application/json") // Ensure JSON for error response
-		w.WriteHeader(adkSessionResp.StatusCode)          // Forward ADK's status code
+		w.WriteHeader(adkSessionResp.StatusCode)           // Forward ADK's status code
 		w.Write(sessionRespBodyBytes)                      // Forward ADK's error body
 		return
 	}
@@ -885,7 +893,6 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// --- End Step 2 ---
-
 
 	// --- Step 3: Call ADK /run ---
 	adkMessageText := taskReq.TextInstruction
@@ -968,8 +975,8 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 			respondWithJSON(w, adkRunResp.StatusCode, respMap)
 		} else {
 			respondWithJSON(w, adkRunResp.StatusCode, map[string]interface{}{
-				"task_session_id_echo":    adkTaskSessionID,
-				"error":                   "ADK /run failed for background task with non-map JSON response",
+				"task_session_id_echo":  adkTaskSessionID,
+				"error":                 "ADK /run failed for background task with non-map JSON response",
 				"adk_original_response": adkResponseData,
 			})
 		}
@@ -1005,10 +1012,10 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	if payload.Timestamp != "" {
 		// Try common ISO 8601 formats, including with milliseconds and Z suffix
 		formatsToTry := []string{
-			time.RFC3339Nano, // "2006-01-02T15:04:05.999999999Z07:00"
-			time.RFC3339,     // "2006-01-02T15:04:05Z07:00"
+			time.RFC3339Nano,                // "2006-01-02T15:04:05.999999999Z07:00"
+			time.RFC3339,                    // "2006-01-02T15:04:05Z07:00"
 			"2006-01-02T15:04:05.000Z07:00", // Common JS Date.toISOString()
-			"2006-01-02T15:04:05Z07:00",    // Without milliseconds
+			"2006-01-02T15:04:05Z07:00",     // Without milliseconds
 			time.RFC1123Z,
 			time.RFC1123,
 		}

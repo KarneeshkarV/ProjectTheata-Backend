@@ -1,7 +1,6 @@
 -- +goose Up
 -- +goose StatementBegin
-
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
@@ -13,10 +12,8 @@ CREATE TABLE users (
 
 -- +goose Down
 -- +goose StatementBegin
-
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS chat_room_members;
 DROP TABLE IF EXISTS chat_rooms;
 DROP TABLE IF EXISTS users;
-
 -- +goose StatementEnd
