@@ -20,6 +20,22 @@ import (
 	// _ "gotest.tools/v3/fs" // Not typically needed in main db file
 )
 
+type ChatWithDetails struct {
+	Chat
+	ParticipantCount int        `json:"participant_count"`
+	LastMessage      string     `json:"last_message,omitempty"`
+	LastMessageAt    *time.Time `json:"last_message_at,omitempty"`
+}
+type Chat struct {
+	ID        int            `json:"id"`
+	Title     string         `json:"title"`
+	Summary   sql.NullString `json:"summary,omitempty"`
+	CreatedBy sql.NullInt64  `json:"created_by,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	IsActive  bool           `json:"is_active"`
+}
+
 // ChatLine represents a row fetched from chat_line, potentially with user handle
 type ChatLine struct {
 	ID         int64
@@ -57,6 +73,13 @@ type Service interface {
 	// --- ADDED METHOD SIGNATURES FOR GOOGLE TOKENS ---
 	GetUserGoogleToken(ctx context.Context, supabaseUserID string) (*UserGoogleToken, error)
 	SaveOrUpdateUserGoogleToken(ctx context.Context, token UserGoogleToken) error
+	CreateChat(ctx context.Context, title string, createdBy int) (*Chat, error)
+	GetUserChats(ctx context.Context, userID int) ([]ChatWithDetails, error)
+	GetChatByID(ctx context.Context, chatID, userID int) (*Chat, error)
+	AddUserToChat(ctx context.Context, chatID, userID int, role string) error
+	UpdateChatTitle(ctx context.Context, chatID int, title string, userID int) error
+
+	DeleteChat(ctx context.Context, chatID, userID int) error
 }
 
 type service struct {
@@ -218,15 +241,14 @@ func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string
 	return 0, fmt.Errorf("failed to query chat user '%s': %w", handle, err)
 }
 
-// --- SaveChatLine() function remains the same ---
-func (s *service) SaveChatLine(ctx context.Context, chatID int, userID int, text string, timestamp time.Time) error {
-	query := `INSERT INTO chat_line (chat_id, user_id, line_text, created_at) VALUES ($1, $2, $3, $4)`
-	_, err := s.db.ExecContext(ctx, query, chatID, userID, text, timestamp)
-	if err != nil {
-		return fmt.Errorf("failed to insert chat line: %w", err)
-	}
-	return nil
-}
+/*func (s *service) SaveChatLine(ctx context.Context, chatID int, userID int, text string, timestamp time.Time) error {*/
+/*query := `INSERT INTO chat_line (chat_id, user_id, line_text, created_at) VALUES ($1, $2, $3, $4)`*/
+/*_, err := s.db.ExecContext(ctx, query, chatID, userID, text, timestamp)*/
+/*if err != nil {*/
+/*return fmt.Errorf("failed to insert chat line: %w", err)*/
+/*}*/
+/*return nil*/
+/*}*/
 
 // --- GetTotalChatLength() function remains the same ---
 func (s *service) GetTotalChatLength(ctx context.Context, chatID int) (int, error) {
@@ -479,3 +501,224 @@ func (s *service) Close() error {
 
 // formatChatHistory and countTokens can remain if they are used by other parts,
 // but they are not directly related to the Google token storage.
+
+func (s *service) CreateChat(ctx context.Context, title string, createdBy int) (*Chat, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Create the chat
+	var chat Chat
+	query := `
+        INSERT INTO chat (title, created_by, created_at, updated_at)
+        VALUES ($1, $2, NOW(), NOW())
+        RETURNING id, title, created_by, created_at, updated_at, is_active
+    `
+	err = tx.QueryRowContext(ctx, query, title, createdBy).Scan(
+		&chat.ID, &chat.Title, &chat.CreatedBy, &chat.CreatedAt, &chat.UpdatedAt, &chat.IsActive,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chat: %w", err)
+	}
+
+	// Add creator as participant
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO chat_participants (chat_id, user_id, role) VALUES ($1, $2, 'owner')",
+		chat.ID, createdBy,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add creator as participant: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &chat, nil
+}
+
+// GetUserChats retrieves all chats for a specific user
+func (s *service) GetUserChats(ctx context.Context, userID int) ([]ChatWithDetails, error) {
+	query := `
+        SELECT 
+            c.id, c.title, c.summary, c.created_by, c.created_at, c.updated_at, c.is_active,
+            COUNT(cp.user_id) as participant_count,
+            cl_last.line_text as last_message,
+            cl_last.created_at as last_message_at
+        FROM chat c
+        INNER JOIN chat_participants cp ON c.id = cp.chat_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (chat_id) chat_id, line_text, created_at
+            FROM chat_line
+            ORDER BY chat_id, created_at DESC
+        ) cl_last ON c.id = cl_last.chat_id
+        WHERE cp.user_id = $1 AND c.is_active = true
+        GROUP BY c.id, c.title, c.summary, c.created_by, c.created_at, c.updated_at, c.is_active, cl_last.line_text, cl_last.created_at
+        ORDER BY COALESCE(cl_last.created_at, c.updated_at) DESC
+    `
+
+	rows, err := s.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query user chats: %w", err)
+	}
+	defer rows.Close()
+
+	var chats []ChatWithDetails
+	for rows.Next() {
+		var chat ChatWithDetails
+		var lastMessageAt sql.NullTime
+		var lastMessage sql.NullString
+
+		err := rows.Scan(
+			&chat.ID, &chat.Title, &chat.Summary, &chat.CreatedBy,
+			&chat.CreatedAt, &chat.UpdatedAt, &chat.IsActive,
+			&chat.ParticipantCount, &lastMessage, &lastMessageAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan chat row: %w", err)
+		}
+
+		if lastMessage.Valid {
+			chat.LastMessage = lastMessage.String
+		}
+		if lastMessageAt.Valid {
+			chat.LastMessageAt = &lastMessageAt.Time
+		}
+
+		chats = append(chats, chat)
+	}
+
+	return chats, nil
+}
+
+// GetChatByID retrieves a specific chat with participant validation
+func (s *service) GetChatByID(ctx context.Context, chatID, userID int) (*Chat, error) {
+	query := `
+        SELECT c.id, c.title, c.summary, c.created_by, c.created_at, c.updated_at, c.is_active
+        FROM chat c
+        INNER JOIN chat_participants cp ON c.id = cp.chat_id
+        WHERE c.id = $1 AND cp.user_id = $2 AND c.is_active = true
+    `
+
+	var chat Chat
+	err := s.db.QueryRowContext(ctx, query, chatID, userID).Scan(
+		&chat.ID, &chat.Title, &chat.Summary, &chat.CreatedBy,
+		&chat.CreatedAt, &chat.UpdatedAt, &chat.IsActive,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil // Chat not found or user not a participant
+		}
+		return nil, fmt.Errorf("failed to get chat: %w", err)
+	}
+
+	return &chat, nil
+}
+
+// AddUserToChat adds a user as a participant to a chat
+func (s *service) AddUserToChat(ctx context.Context, chatID, userID int, role string) error {
+	query := `
+        INSERT INTO chat_participants (chat_id, user_id, role)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (chat_id, user_id) DO NOTHING
+    `
+	_, err := s.db.ExecContext(ctx, query, chatID, userID, role)
+	if err != nil {
+		return fmt.Errorf("failed to add user to chat: %w", err)
+	}
+	return nil
+}
+
+// UpdateChatTitle updates the title of a chat
+func (s *service) UpdateChatTitle(ctx context.Context, chatID int, title string, userID int) error {
+	query := `
+        UPDATE chat 
+        SET title = $1, updated_at = NOW()
+        FROM chat_participants cp
+        WHERE chat.id = $2 AND cp.chat_id = chat.id AND cp.user_id = $3
+    `
+	result, err := s.db.ExecContext(ctx, query, title, chatID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to update chat title: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("chat not found or user not authorized")
+	}
+
+	return nil
+}
+
+// DeleteChat soft deletes a chat (sets is_active to false)
+func (s *service) DeleteChat(ctx context.Context, chatID, userID int) error {
+	query := `
+        UPDATE chat 
+        SET is_active = false, updated_at = NOW()
+        FROM chat_participants cp
+        WHERE chat.id = $1 AND cp.chat_id = chat.id AND cp.user_id = $2 AND cp.role = 'owner'
+    `
+	result, err := s.db.ExecContext(ctx, query, chatID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete chat: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("chat not found or user not authorized to delete")
+	}
+
+	return nil
+}
+
+func (s *service) SaveChatLine(ctx context.Context, chatID, userID int, text string, timestamp time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verify user is a participant
+	var participantExists bool
+	err = tx.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM chat_participants WHERE chat_id = $1 AND user_id = $2)",
+		chatID, userID,
+	).Scan(&participantExists)
+	if err != nil {
+		return fmt.Errorf("failed to verify participant: %w", err)
+	}
+	if !participantExists {
+		return fmt.Errorf("user is not a participant in this chat")
+	}
+
+	// Save chat line
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO chat_line (chat_id, user_id, line_text, created_at) VALUES ($1, $2, $3, $4)",
+		chatID, userID, text, timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save chat line: %w", err)
+	}
+
+	// Update chat's updated_at timestamp
+	_, err = tx.ExecContext(ctx,
+		"UPDATE chat SET updated_at = NOW() WHERE id = $1",
+		chatID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update chat timestamp: %w", err)
+	}
+
+	return tx.Commit()
+}

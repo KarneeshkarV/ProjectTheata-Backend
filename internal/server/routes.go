@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	_"github.com/tiktoken-go/tokenizer"
+	_ "github.com/tiktoken-go/tokenizer"
 	"golang.org/x/oauth2/google"
 	"io"
 	"log"
@@ -141,7 +141,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 	})
 	r.Get("/", s.HelloWorldHandler)
 	r.Get("/wolf", s.WolfFromAlpha)
-	r.Post("/text", s.handleTranscript)
+	//r.Post("/text", s.handleTranscript)
 	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
 
@@ -165,8 +165,14 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Post("/tasks/execute", s.handleExecuteADKTask)
 
 		// Route for receiving transcripts (e.g., from frontend)
-		r.Post("/text", s.handleTranscript) // For logging transcripts
+		r.Post("/text", s.handleTranscript)                    // For logging transcripts
+		r.HandleFunc("/api/chats", s.GetUserChatsHandler)      // GET - list user's chats
+		r.HandleFunc("/api/chats/create", s.CreateChatHandler) // POST - create new chat
+		r.HandleFunc("/api/chats/update", s.UpdateChatHandler) // PUT - update chat
+		r.HandleFunc("/api/chats/delete", s.DeleteChatHandler)
+
 	})
+
 	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -1134,4 +1140,188 @@ func SanitizeForID(input string) string {
 		return "default_id_part"
 	}
 	return result.String()
+}
+
+func (s *Server) CreateChatHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondWithError(w, http.StatusMethodNotAllowed, "Only POST method allowed")
+		return
+	}
+
+	var payload struct {
+		Title  string `json:"title"`
+		UserID int    `json:"user_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	if payload.Title == "" {
+		payload.Title = "New Chat"
+	}
+
+	if payload.UserID == 0 {
+		respondWithError(w, http.StatusBadRequest, "user_id is required")
+		return
+	}
+
+	chat, err := s.db.CreateChat(r.Context(), payload.Title, payload.UserID)
+	if err != nil {
+		log.Printf("Error creating chat: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to create chat")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, chat)
+}
+
+// GetUserChatsHandler retrieves all chats for a user
+func (s *Server) GetUserChatsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondWithError(w, http.StatusMethodNotAllowed, "Only GET method allowed")
+		return
+	}
+
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		respondWithError(w, http.StatusBadRequest, "user_id query parameter is required")
+		return
+	}
+
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid user_id")
+		return
+	}
+
+	chats, err := s.db.GetUserChats(r.Context(), userID)
+	if err != nil {
+		log.Printf("Error retrieving user chats: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve chats")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"chats": chats,
+		"count": len(chats),
+	})
+}
+
+// UpdateChatHandler updates chat details
+func (s *Server) UpdateChatHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		respondWithError(w, http.StatusMethodNotAllowed, "Only PUT method allowed")
+		return
+	}
+
+	chatIDStr := r.URL.Query().Get("chat_id")
+	if chatIDStr == "" {
+		respondWithError(w, http.StatusBadRequest, "chat_id query parameter is required")
+		return
+	}
+
+	chatID, err := strconv.Atoi(chatIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
+		return
+	}
+
+	var payload struct {
+		Title  string `json:"title"`
+		UserID int    `json:"user_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	if payload.UserID == 0 {
+		respondWithError(w, http.StatusBadRequest, "user_id is required")
+		return
+	}
+
+	if payload.Title == "" {
+		respondWithError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+
+	err = s.db.UpdateChatTitle(r.Context(), chatID, payload.Title, payload.UserID)
+	if err != nil {
+		log.Printf("Error updating chat title: %v", err)
+		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "not found") {
+			respondWithError(w, http.StatusForbidden, "Chat not found or not authorized")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, "Failed to update chat")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat updated successfully"})
+}
+
+// DeleteChatHandler deletes a chat
+func (s *Server) DeleteChatHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		respondWithError(w, http.StatusMethodNotAllowed, "Only DELETE method allowed")
+		return
+	}
+
+	chatIDStr := r.URL.Query().Get("chat_id")
+	userIDStr := r.URL.Query().Get("user_id")
+
+	if chatIDStr == "" || userIDStr == "" {
+		respondWithError(w, http.StatusBadRequest, "chat_id and user_id query parameters are required")
+		return
+	}
+
+	chatID, err := strconv.Atoi(chatIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
+		return
+	}
+
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid user_id")
+		return
+	}
+
+	err = s.db.DeleteChat(r.Context(), chatID, userID)
+	if err != nil {
+		log.Printf("Error deleting chat: %v", err)
+		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "not found") {
+			respondWithError(w, http.StatusForbidden, "Chat not found or not authorized")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete chat")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat deleted successfully"})
+}
+
+// Update your RegisterRoutes function to include the new endpoints
+func (s *Server) RegisterRoutes() http.Handler {
+	mux := http.NewServeMux()
+
+	// Existing routes
+	mux.HandleFunc("/", s.HelloWorldHandler)
+	mux.HandleFunc("/health", s.healthHandler)
+
+	// Chat management endpoints
+	mux.HandleFunc("/api/chats", s.GetUserChatsHandler)      // GET - list user's chats
+	mux.HandleFunc("/api/chats/create", s.CreateChatHandler) // POST - create new chat
+	mux.HandleFunc("/api/chats/update", s.UpdateChatHandler) // PUT - update chat
+	mux.HandleFunc("/api/chats/delete", s.DeleteChatHandler) // DELETE - delete chat
+
+	// Existing chat line endpoints
+	mux.HandleFunc("/api/chat/history", s.GetChatHistoryHandler)
+	mux.HandleFunc("/api/transcript/log", s.TranscriptLogHandler)
+
+	// Other existing routes...
+
+	return mux
 }
