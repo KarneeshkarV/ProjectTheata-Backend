@@ -166,11 +166,11 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Post("/tasks/execute", s.handleExecuteADKTask)
 
 		// Route for receiving transcripts (e.g., from frontend)
-		r.Post("/text", s.handleTranscript)              // For logging transcripts
-		r.Get("/api/chats", s.GetUserChatsHandler)       // GET - list user's chats
-		r.Post("/api/chats/create", s.CreateChatHandler) // POST - create new chat
-		r.Put("/api/chats/update", s.UpdateChatHandler)  // PUT - update chat
-		r.Delete("/api/chats/delete", s.DeleteChatHandler)
+		r.Post("/text", s.handleTranscript)          // For logging transcripts
+		r.Get("/chats", s.GetUserChatsHandler)       // GET - list user's chats
+		r.Post("/chats/create", s.CreateChatHandler) // POST - create new chat
+		r.Put("/chats/update", s.UpdateChatHandler)  // PUT - update chat
+		r.Delete("/chats/delete", s.DeleteChatHandler)
 
 	})
 
