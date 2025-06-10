@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -165,11 +166,11 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Post("/tasks/execute", s.handleExecuteADKTask)
 
 		// Route for receiving transcripts (e.g., from frontend)
-		r.Post("/text", s.handleTranscript)                    // For logging transcripts
-		r.HandleFunc("/api/chats", s.GetUserChatsHandler)      // GET - list user's chats
-		r.HandleFunc("/api/chats/create", s.CreateChatHandler) // POST - create new chat
-		r.HandleFunc("/api/chats/update", s.UpdateChatHandler) // PUT - update chat
-		r.HandleFunc("/api/chats/delete", s.DeleteChatHandler)
+		r.Post("/text", s.handleTranscript)              // For logging transcripts
+		r.Get("/api/chats", s.GetUserChatsHandler)       // GET - list user's chats
+		r.Post("/api/chats/create", s.CreateChatHandler) // POST - create new chat
+		r.Put("/api/chats/update", s.UpdateChatHandler)  // PUT - update chat
+		r.Delete("/api/chats/delete", s.DeleteChatHandler)
 
 	})
 
@@ -1301,27 +1302,4 @@ func (s *Server) DeleteChatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat deleted successfully"})
-}
-
-// Update your RegisterRoutes function to include the new endpoints
-func (s *Server) RegisterRoutes() http.Handler {
-	mux := http.NewServeMux()
-
-	// Existing routes
-	mux.HandleFunc("/", s.HelloWorldHandler)
-	mux.HandleFunc("/health", s.healthHandler)
-
-	// Chat management endpoints
-	mux.HandleFunc("/api/chats", s.GetUserChatsHandler)      // GET - list user's chats
-	mux.HandleFunc("/api/chats/create", s.CreateChatHandler) // POST - create new chat
-	mux.HandleFunc("/api/chats/update", s.UpdateChatHandler) // PUT - update chat
-	mux.HandleFunc("/api/chats/delete", s.DeleteChatHandler) // DELETE - delete chat
-
-	// Existing chat line endpoints
-	mux.HandleFunc("/api/chat/history", s.GetChatHistoryHandler)
-	mux.HandleFunc("/api/transcript/log", s.TranscriptLogHandler)
-
-	// Other existing routes...
-
-	return mux
 }
