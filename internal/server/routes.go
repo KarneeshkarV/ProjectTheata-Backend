@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,7 +163,9 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Post("/chats/create", s.handleCreateChat)
 		r.Put("/chats/update", s.handleUpdateChat)
 		r.Delete("/chats/delete", s.handleDeleteChat)
+
 	})
+
 	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -327,7 +330,7 @@ func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
-	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Hello World from Go Backend!"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Hello World"})
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -1078,6 +1081,7 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	response, err := json.Marshal(payload)
 	if err != nil {
@@ -1112,3 +1116,4 @@ func SanitizeForID(input string) string {
 	}
 	return result.String()
 }
+
