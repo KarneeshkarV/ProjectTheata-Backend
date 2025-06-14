@@ -7,11 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
-	_ "github.com/tiktoken-go/tokenizer"
-	"golang.org/x/oauth2/google"
 	"io"
 	"log"
 	"net/http"
@@ -20,9 +15,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"strconv"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"golang.org/x/oauth2/google"
 )
 
-// SSEClientManager and related structs (SSEEvent, sseClientRegistrationHelper)
+// SSE structures remain unchanged
 type SSEClientManager struct {
 	clients              map[string]map[chan SSEEvent]bool
 	mu                   sync.RWMutex
@@ -40,8 +40,8 @@ type sseClientRegistrationHelper struct {
 
 type SSEEvent struct {
 	Type    string      `json:"type"`
-	ID      string      `json:"id"`      // session_id for targeting
-	Payload interface{} `json:"payload"` // Can be any JSON-marshallable data
+	ID      string      `json:"id"`
+	Payload interface{} `json:"payload"`
 }
 
 func NewSSEClientManager(retryInterval time.Duration, maxClientsPerSession int) *SSEClientManager {
@@ -78,7 +78,6 @@ func (m *SSEClientManager) Run() {
 			if sessionClients, ok := m.clients[unreg.sessionID]; ok {
 				if _, clientExists := sessionClients[unreg.client]; clientExists {
 					delete(sessionClients, unreg.client)
-					// Do not close unreg.client here as the sender (HTTP handler) owns it and will detect closure through context.Done()
 					log.Printf("SSE Client unregistered for session %s. Remaining for session: %d", unreg.sessionID, len(sessionClients))
 					if len(sessionClients) == 0 {
 						delete(m.clients, unreg.sessionID)
@@ -96,7 +95,6 @@ func (m *SSEClientManager) Run() {
 					case clientChan <- event:
 					default:
 						log.Printf("SSE Client channel for session %s is full or closed. Event type '%s' dropped for this client.", event.ID, event.Type)
-						// Optionally, could trigger unregistration if channel is consistently full
 					}
 				}
 			}
@@ -123,18 +121,17 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger) // Chi's logger
+	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(60 * time.Second)) // General request timeout
+	r.Use(middleware.Timeout(60 * time.Second))
 
-	// CORS configuration
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
-		MaxAge:           300, // Maximum value not ignored by any major browsers
+		MaxAge:           300,
 	}))
 
 	r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +139,6 @@ func (s *Server) RegisterRoutes() http.Handler {
 	})
 	r.Get("/", s.HelloWorldHandler)
 	r.Get("/wolf", s.WolfFromAlpha)
-	//r.Post("/text", s.handleTranscript)
 	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
 
@@ -151,26 +147,22 @@ func (s *Server) RegisterRoutes() http.Handler {
 			w.Write([]byte("pong from /api/ping-api"))
 		})
 
-		// Google OAuth authentication routes
 		r.Get("/auth/google/login", s.googleAuthSvc.HandleLogin)
 		r.Get("/auth/google/callback", s.googleAuthSvc.HandleCallback)
-		r.Get("/auth/google/status", s.handleGoogleAuthStatus) // For checking token status
+		r.Get("/auth/google/status", s.handleGoogleAuthStatus)
 
-		// ADK Agent interaction routes (simplified example)
-		r.Post("/agent/session", s.handleCreateAgentSession) // For frontend to manage main agent session
-		r.Post("/agent/query", s.handleSendAgentQuery)       // For frontend to send query to main agent session
-		r.Get("/agent/events", s.handleAgentEventsSSE)       // SSE endpoint for agent responses
-		r.Post("/agent/command", s.handleAgentCommand)       // For sending commands to a specific agent session via SSE
-
-		// Route for executing background tasks via ADK
+		r.Post("/agent/session", s.handleCreateAgentSession)
+		r.Post("/agent/query", s.handleSendAgentQuery)
+		r.Get("/agent/events", s.handleAgentEventsSSE)
+		r.Post("/agent/command", s.handleAgentCommand)
 		r.Post("/tasks/execute", s.handleExecuteADKTask)
+		r.Post("/text", s.handleTranscript)
 
-		// Route for receiving transcripts (e.g., from frontend)
-		r.Post("/text", s.handleTranscript)          // For logging transcripts
-		r.Get("/chats", s.GetUserChatsHandler)       // GET - list user's chats
-		r.Post("/chats/create", s.CreateChatHandler) // POST - create new chat
-		r.Put("/chats/update", s.UpdateChatHandler)  // PUT - update chat
-		r.Delete("/chats/delete", s.DeleteChatHandler)
+		// --- NEW ROUTES FOR CHAT MANAGEMENT ---
+		r.Get("/chats", s.handleGetChats)
+		r.Post("/chats/create", s.handleCreateChat)
+		r.Put("/chats/update", s.handleUpdateChat)
+		r.Delete("/chats/delete", s.handleDeleteChat)
 
 	})
 
@@ -180,10 +172,109 @@ func (s *Server) RegisterRoutes() http.Handler {
 	return r
 }
 
-// REMOVED: countTokens function (no longer drives summarization)
-// func countTokens(text string, encoding tokenizer.Encoding) (int, error) { ... }
+// --- NEW CHAT HANDLERS ---
+func (s *Server) handleGetChats(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		respondWithError(w, http.StatusBadRequest, "user_id is required")
+		return
+	}
+
+	chats, err := s.db.GetChatsForUser(r.Context(), userID)
+	if err != nil {
+		log.Printf("Error getting chats for user %s: %v", userID, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve chats")
+		return
+	}
+
+	// The frontend expects a specific structure
+	responsePayload := map[string]interface{}{
+		"chats": chats,
+	}
+
+	respondWithJSON(w, http.StatusOK, responsePayload)
+}
+
+func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Title  string `json:"title"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if payload.Title == "" || payload.UserID == "" {
+		respondWithError(w, http.StatusBadRequest, "title and user_id are required")
+		return
+	}
+
+	chat, err := s.db.CreateChat(r.Context(), payload.Title, payload.UserID)
+	if err != nil {
+		log.Printf("Error creating chat for user %s: %v", payload.UserID, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to create chat")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, chat)
+}
+
+func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
+	chatIDStr := r.URL.Query().Get("chat_id")
+	chatID, err := strconv.Atoi(chatIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
+		return
+	}
+
+	var payload struct {
+		Title  string `json:"title"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if payload.Title == "" || payload.UserID == "" {
+		respondWithError(w, http.StatusBadRequest, "title and user_id are required")
+		return
+	}
+
+	err = s.db.UpdateChat(r.Context(), chatID, payload.Title, payload.UserID)
+	if err != nil {
+		log.Printf("Error updating chat %d for user %s: %v", chatID, payload.UserID, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to update chat")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat updated successfully"})
+}
+
+func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
+	chatIDStr := r.URL.Query().Get("chat_id")
+	chatID, err := strconv.Atoi(chatIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
+		return
+	}
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		respondWithError(w, http.StatusBadRequest, "user_id is required")
+		return
+	}
+
+	err = s.db.DeleteChat(r.Context(), chatID, userID)
+	if err != nil {
+		log.Printf("Error deleting chat %d for user %s: %v", chatID, userID, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete chat")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat deleted successfully"})
+}
+
+// --- existing handlers (some are modified) ---
 func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
-	// Ensure the request method is GET.
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -195,7 +286,6 @@ func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the URL with proper params
 	baseURL := "https://api.wolframalpha.com/v2/query"
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -207,10 +297,9 @@ func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 	params.Set("appid", "TEWJ4U-U775T2KH95")
 	params.Set("input", input)
 	params.Set("output", "json")
-	params.Set("format", "plaintext") // Requesting plaintext for simpler JSON parsing if needed later
+	params.Set("format", "plaintext")
 	u.RawQuery = params.Encode()
 
-	// Make the GET request
 	resp, err := http.Get(u.String())
 	if err != nil {
 		log.Printf("WolframAlpha API request error: %v", err)
@@ -219,7 +308,6 @@ func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Failed to read response body: %v", err)
@@ -227,21 +315,17 @@ func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for non-OK status codes after reading the body
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("WolframAlpha API returned status %d: %s", resp.StatusCode, string(body))
-		// Try to provide a more informative error message if possible
 		http.Error(w, fmt.Sprintf("API error: %s - %s", resp.Status, string(body)), resp.StatusCode)
 		return
 	}
 
-	// Set the content type to JSON and write the response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(body)
 	if err != nil {
 		log.Printf("Failed to write response: %v", err)
-		// If we can't write the response, there isn't much we can do.
 	}
 }
 
@@ -251,7 +335,6 @@ func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	dbHealth := s.db.Health()
-	// Add other health checks if needed (e.g., ADK agent connectivity)
 	respondWithJSON(w, http.StatusOK, dbHealth)
 }
 
@@ -274,33 +357,25 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 	log.Printf("Handling Google Auth Status request for Supabase User ID: %s", supabaseUserID)
 	token, err := s.db.GetUserGoogleToken(r.Context(), supabaseUserID)
 	if err != nil {
-		// Check if it's sql.ErrNoRows specifically
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("No Google token found in DB for Supabase User ID: %s", supabaseUserID)
 			respondWithJSON(w, http.StatusOK, map[string]interface{}{"connected": false, "reason": "no_token_found_in_db"})
 			return
 		}
-		// For other errors, log and return internal server error
 		log.Printf("Error fetching Google token for Supabase User ID %s: %v", supabaseUserID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to fetch token status from database")
 		return
 	}
 
-	// Token struct was found, now check its contents
 	if token != nil && token.EncryptedAccessToken != "" {
-		isLikelyConnected := true // Assume connected if token exists
+		isLikelyConnected := true
 		reason := "token_exists"
-
-		// Check expiry (consider a buffer, e.g., 5 minutes before actual expiry)
 		if token.TokenExpiry.Valid && time.Now().After(token.TokenExpiry.Time.Add(-5*time.Minute)) {
-			// Token is expired or about to expire
 			if !token.EncryptedRefreshToken.Valid || token.EncryptedRefreshToken.String == "" {
-				isLikelyConnected = false // Cannot refresh
+				isLikelyConnected = false
 				reason = "token_expired_no_refresh"
 				log.Printf("Token for Supabase User %s is expired and no refresh token available.", supabaseUserID)
 			} else {
-				// Can potentially be refreshed, but for status check, indicate it might need it.
-				// Actual refresh happens when token is used.
 				reason = "token_exists_may_need_refresh"
 				log.Printf("Token for Supabase User %s exists but may need refresh (expiry: %s).", supabaseUserID, token.TokenExpiry.Time)
 			}
@@ -310,55 +385,44 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Token record might exist but access token is empty, or token is nil (should be caught by ErrNoRows)
 	log.Printf("No Google token record or empty access token for Supabase User ID: %s.", supabaseUserID)
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{"connected": false, "reason": "token_record_missing_or_empty"})
 }
 
-// --- Structs for ADK Agent Interaction (shared between session/query/task) ---
-
-// CreateSessionRequest defines the expected JSON from the frontend to create/join an ADK session
+// --- Structs for ADK Agent Interaction ---
 type CreateSessionRequest struct {
-	UserID       string                 `json:"user_id"`         // Supabase User ID from frontend
-	SessionID    string                 `json:"session_id"`      // Desired ADK Session ID from frontend
-	InitialState map[string]interface{} `json:"state,omitempty"` // Optional initial state for ADK session
+	UserID       string                 `json:"user_id"`
+	SessionID    string                 `json:"session_id"`
+	InitialState map[string]interface{} `json:"state,omitempty"`
 }
 
-// SendQueryRequest defines the expected JSON from the frontend to send a query to an ADK session
 type SendQueryRequest struct {
-	UserID    string `json:"user_id"`    // Supabase User ID
-	SessionID string `json:"session_id"` // Target ADK Session ID
-	Text      string `json:"text"`       // User's query/message text
+	UserID    string `json:"user_id"`
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
 }
 
-// ADKCreateSessionPayload is the payload sent to ADK for creating/ensuring a session
 type ADKCreateSessionPayload struct {
-	State map[string]interface{} `json:"state,omitempty"` // ADK uses 'state' for initial session data
+	State map[string]interface{} `json:"state,omitempty"`
 }
 
-// ADKNewMessagePart defines a part of a message for ADK (e.g., text, image)
 type ADKNewMessagePart struct {
 	Text string `json:"text,omitempty"`
-	// Could add other types like InlineDataPart for images if ADK supports it this way
 }
 
-// ADKNewMessage defines the new_message structure for the ADK agent's /run endpoint
 type ADKNewMessage struct {
-	Role  string              `json:"role"`  // e.g., "user"
-	Parts []ADKNewMessagePart `json:"parts"` // Array of message parts
+	Role  string              `json:"role"`
+	Parts []ADKNewMessagePart `json:"parts"`
 }
 
-// ADKRunPayload is the payload for the ADK agent's /run endpoint
 type ADKRunPayload struct {
-	AppName     string                 `json:"app_name"`               // ADK Application Name
-	UserID      string                 `json:"user_id"`                // User ID recognized by ADK
-	SessionID   string                 `json:"session_id"`             // Session ID for ADK
-	NewMessage  ADKNewMessage          `json:"new_message"`            // The message/query for the agent
-	Stream      bool                   `json:"stream,omitempty"`       // Whether to stream ADK response
-	AuthContext map[string]interface{} `json:"auth_context,omitempty"` // For passing Google tokens (REMOVED - will be set via state update)
+	AppName     string                 `json:"app_name"`
+	UserID      string                 `json:"user_id"`
+	SessionID   string                 `json:"session_id"`
+	NewMessage  ADKNewMessage          `json:"new_message"`
+	Stream      bool                   `json:"stream,omitempty"`
+	AuthContext map[string]interface{} `json:"auth_context,omitempty"`
 }
-
-// --- ADK Session and Query Handlers (for main interactive agent) ---
 
 func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request) {
 	var req CreateSessionRequest
@@ -368,25 +432,21 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 	}
 	defer r.Body.Close()
 
-	supabaseUserID := req.UserID  // User ID from frontend (Supabase)
-	adkSessionID := req.SessionID // Session ID from frontend (for ADK)
+	supabaseUserID := req.UserID
+	adkSessionID := req.SessionID
 
 	if adkSessionID == "" {
 		respondWithError(w, http.StatusBadRequest, "ADK session_id is required to create/join a session")
 		return
 	}
 
-	// Use Supabase User ID for ADK user, or default if none provided (though frontend should always send)
 	adkUserID := s.cfg.DefaultADKUserID
 	if supabaseUserID != "" {
 		adkUserID = supabaseUserID
 	}
 
 	adkURL := fmt.Sprintf("%s/apps/%s/users/%s/sessions/%s", s.cfg.ADKAgentBaseURL, s.cfg.ADKAgentAppName, adkUserID, adkSessionID)
-
-	// For session creation, state is optional. If not provided, ADK uses default.
 	adkPayload := ADKCreateSessionPayload{State: req.InitialState}
-
 	payloadBytes, err := json.Marshal(adkPayload)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error marshalling ADK session payload: "+err.Error())
@@ -399,7 +459,6 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	adkReq.Header.Set("Content-Type", "application/json")
-
 	log.Printf("Forwarding session creation/join to ADK: %s (ADK User: %s, ADK Session: %s)", adkURL, adkUserID, adkSessionID)
 
 	adkResp, err := s.httpClient.Do(adkReq)
@@ -415,14 +474,10 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// ADK returns 200 OK if session exists or was successfully created.
-	// It might also return 201 Created.
 	if adkResp.StatusCode == http.StatusOK || adkResp.StatusCode == http.StatusCreated {
 		var adkResponseData map[string]interface{}
-		returnedSessionID := adkSessionID // Default to requested ID
-		// Try to parse the response to see if ADK returns the session ID
+		returnedSessionID := adkSessionID
 		if err := json.Unmarshal(adkBodyBytes, &adkResponseData); err == nil {
-			// ADK might return the ID under "session_id" or "id"
 			if idFromADK, ok := adkResponseData["session_id"].(string); ok && idFromADK != "" {
 				returnedSessionID = idFromADK
 			} else if idFromADK, ok := adkResponseData["id"].(string); ok && idFromADK != "" {
@@ -438,7 +493,6 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// prepareAuthContextForADK fetches and decrypts Google tokens, then structures them for ADK.
 func (s *Server) prepareAuthContextForADK(ctx context.Context, supabaseUserID string) map[string]interface{} {
 	if supabaseUserID == "" {
 		log.Println("AuthContext: No Supabase User ID provided, cannot prepare auth context.")
@@ -448,17 +502,17 @@ func (s *Server) prepareAuthContextForADK(ctx context.Context, supabaseUserID st
 	tokens, err := s.db.GetUserGoogleToken(ctx, supabaseUserID)
 	if err != nil {
 		log.Printf("AuthContext: Error fetching Google tokens for Supabase user %s: %v", supabaseUserID, err)
-		return nil // Return nil if tokens can't be fetched
+		return nil
 	}
 	if tokens == nil {
 		log.Printf("AuthContext: No Google tokens found in DB for Supabase user %s.", supabaseUserID)
-		return nil // Return nil if no tokens are found
+		return nil
 	}
 
 	decryptedAccessToken, errAT := s.googleAuthSvc.DecryptToken(tokens.EncryptedAccessToken)
 	if errAT != nil {
 		log.Printf("AuthContext: Error decrypting access token for Supabase user %s: %v", supabaseUserID, errAT)
-		return nil // Critical error if access token cannot be decrypted
+		return nil
 	}
 
 	var decryptedRefreshToken string
@@ -467,7 +521,7 @@ func (s *Server) prepareAuthContextForADK(ctx context.Context, supabaseUserID st
 		decryptedRefreshToken, errRT = s.googleAuthSvc.DecryptToken(tokens.EncryptedRefreshToken.String)
 		if errRT != nil {
 			log.Printf("AuthContext: Error decrypting refresh token for Supabase user %s: %v. Will proceed without it if possible.", supabaseUserID, errRT)
-			decryptedRefreshToken = "" // Clear it if decryption failed
+			decryptedRefreshToken = ""
 		}
 	}
 
@@ -476,21 +530,19 @@ func (s *Server) prepareAuthContextForADK(ctx context.Context, supabaseUserID st
 		expiryStr = tokens.TokenExpiry.Time.Format(time.RFC3339)
 	}
 
-	// This structure should match what the Python ADK agent expects.
 	authContext := map[string]interface{}{
-		"user_identifier_for_token_management": supabaseUserID, // For ADK to know whose tokens these are
-		"google_tokens": map[string]interface{}{ // Changed to interface{} to allow nil refresh_token
+		"user_identifier_for_token_management": supabaseUserID,
+		"google_tokens": map[string]interface{}{
 			"access_token":   decryptedAccessToken,
-			"refresh_token":  decryptedRefreshToken, // Will be empty string if not present or decryption failed
+			"refresh_token":  decryptedRefreshToken,
 			"expiry_rfc3339": expiryStr,
-			"scopes":         strings.Join(tokens.Scopes, " "), // Space-separated string
+			"scopes":         strings.Join(tokens.Scopes, " "),
 		},
-		// Pass client_id and client_secret for ADK to perform refresh if needed.
 		"google_client_config": map[string]string{
 			"client_id":     s.cfg.GoogleClientID,
 			"client_secret": s.cfg.GoogleClientSecret,
-			"token_uri":     google.Endpoint.TokenURL, // Standard Google token URI
-			"auth_uri":      google.Endpoint.AuthURL,  // Standard Google auth URI
+			"token_uri":     google.Endpoint.TokenURL,
+			"auth_uri":      google.Endpoint.AuthURL,
 		},
 	}
 	log.Printf("AuthContext prepared for Supabase User %s. AccessToken (len):%d, RefreshTokenPresent:%t",
@@ -498,7 +550,6 @@ func (s *Server) prepareAuthContextForADK(ctx context.Context, supabaseUserID st
 	return authContext
 }
 
-// Helper to update ADK session state
 func (s *Server) updateADKSessionState(ctx context.Context, adkUserID, adkSessionID string, state map[string]interface{}) error {
 	stateURL := fmt.Sprintf("%s/apps/%s/users/%s/sessions/%s/state", s.cfg.ADKAgentBaseURL, s.cfg.ADKAgentAppName, adkUserID, adkSessionID)
 	stateBytes, err := json.Marshal(state)
@@ -552,7 +603,6 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 		adkUserID = supabaseUserID
 	}
 
-	// Prepare and set auth_context in ADK session state if needed
 	if supabaseUserID != "" &&
 		(strings.Contains(strings.ToLower(req.Text), "gmail") ||
 			strings.Contains(strings.ToLower(req.Text), "email") ||
@@ -561,11 +611,9 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Query for Supabase user %s (ADK User %s, ADK Session %s) suggests Google service, preparing and setting auth context in ADK session state.", supabaseUserID, adkUserID, adkSessionID)
 		authCtx := s.prepareAuthContextForADK(r.Context(), supabaseUserID)
 		if authCtx != nil {
-			// ADK state key for auth context
 			sessionStateUpdate := map[string]interface{}{"current_auth_context": authCtx}
 			if err := s.updateADKSessionState(r.Context(), adkUserID, adkSessionID, sessionStateUpdate); err != nil {
 				log.Printf("Warning: Failed to update ADK session state with auth_context for %s/%s: %v. Proceeding without it.", adkUserID, adkSessionID, err)
-				// Potentially respond with error if this is critical, or let ADK tools handle missing context
 			}
 		} else {
 			log.Printf("Auth context for Supabase user %s could not be prepared for ADK session %s. ADK tools requiring auth may fail.", supabaseUserID, adkSessionID)
@@ -581,8 +629,7 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 			Role:  "user",
 			Parts: []ADKNewMessagePart{{Text: req.Text}},
 		},
-		Stream: true, // Interactive queries should stream
-		// AuthContext: authCtx, // REMOVED - auth_context is now set via session state PUT
+		Stream: true,
 	}
 
 	payloadBytes, err := json.Marshal(adkPayload)
@@ -597,7 +644,7 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adkReq.Header.Set("Content-Type", "application/json")
-	adkReq.Header.Set("Accept", "application/x-ndjson") // For streaming responses from ADK
+	adkReq.Header.Set("Accept", "application/x-ndjson")
 
 	log.Printf("Forwarding query to ADK /run (ADK User: %s, ADK Session: %s, Stream: true): %.50s",
 		adkUserID, adkSessionID, req.Text)
@@ -607,14 +654,11 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusServiceUnavailable, "Error contacting ADK agent for query: "+err.Error())
 		return
 	}
-	// Do not close adkResp.Body here if streaming is successful, it's passed to goroutine
 
 	if adkResp.StatusCode >= 200 && adkResp.StatusCode < 300 {
 		log.Printf("ADK /run accepted query (Status: %d) for ADK session %s. Streaming response to SSE.", adkResp.StatusCode, adkSessionID)
-		// Respond to frontend immediately that query is accepted for streaming.
 		respondWithJSON(w, http.StatusAccepted, map[string]string{"message": "Query accepted for streaming. Responses via SSE."})
 
-		// Goroutine to process the streaming ADK response and publish to SSE
 		go func(responseBody io.ReadCloser, targetSessionID string, clientMgr *SSEClientManager) {
 			defer responseBody.Close()
 			decoder := json.NewDecoder(responseBody)
@@ -622,11 +666,11 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 				var adkStreamChunk map[string]interface{}
 				if err := decoder.Decode(&adkStreamChunk); err != nil {
 					if err == io.EOF {
-						break // End of stream
+						break
 					}
 					log.Printf("Error decoding ADK stream chunk for session %s: %v", targetSessionID, err)
 					clientMgr.Publish(targetSessionID, "adk_stream_error", map[string]string{"error": "Error decoding ADK stream: " + err.Error()})
-					return // Stop processing this stream on error
+					return
 				}
 
 				var role, text, status string
@@ -667,9 +711,8 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 			clientMgr.Publish(targetSessionID, "adk_stream_complete", map[string]string{"message": "ADK stream processing finished."})
 		}(adkResp.Body, adkSessionID, s.sseClientMgr)
 	} else {
-		// Error from ADK /run itself
 		bodyBytes, _ := io.ReadAll(adkResp.Body)
-		adkResp.Body.Close() // Close body here since it's not passed to goroutine
+		adkResp.Body.Close()
 		log.Printf("ADK /run error (Status: %d) for ADK session %s: %s", adkResp.StatusCode, adkSessionID, string(bodyBytes))
 		var adkErrorPayload interface{}
 		if err := json.Unmarshal(bodyBytes, &adkErrorPayload); err == nil {
@@ -680,7 +723,84 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SSE Handler for agent events
+// --- Transcript Logging Handler (MODIFIED) ---
+type TranscriptPayload struct {
+	Speaker   string `json:"speaker"`
+	Text      string `json:"text"`
+	Timestamp string `json:"timestamp"`
+	ChatID    int    `json:"chat_id"` // *** ADDED THIS LINE ***
+}
+
+func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
+	var payload TranscriptPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Printf("Error decoding transcript payload: %v", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid request body for transcript")
+		return
+	}
+	defer r.Body.Close()
+
+	payload.Text = strings.TrimSpace(payload.Text)
+	if payload.Speaker == "" || payload.Text == "" || payload.ChatID == 0 { // *** VALIDATE CHAT_ID ***
+		respondWithError(w, http.StatusBadRequest, "Bad Request: Missing speaker, text, or chat_id in transcript.")
+		return
+	}
+
+	var parsedTimestamp time.Time
+	var errParse error
+	if payload.Timestamp != "" {
+		formatsToTry := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05.000Z07:00", "2006-01-02T15:04:05Z07:00", time.RFC1123Z, time.RFC1123}
+		for _, fmtStr := range formatsToTry {
+			parsedTimestamp, errParse = time.Parse(fmtStr, payload.Timestamp)
+			if errParse == nil {
+				break
+			}
+		}
+		if errParse != nil {
+			log.Printf("Could not parse provided timestamp '%s' (Error: %v), defaulting to now (UTC)", payload.Timestamp, errParse)
+			parsedTimestamp = time.Now().UTC()
+		}
+	} else {
+		parsedTimestamp = time.Now().UTC()
+	}
+
+	logTextPreview := payload.Text
+	maxPrevLen := 100
+	if len(logTextPreview) > maxPrevLen {
+		logTextPreview = logTextPreview[:maxPrevLen] + "..."
+	}
+	log.Printf("[Transcript Log] ChatID: %d, Speaker: %s, Time: %s, Preview: %q, FullLength: %d",
+		payload.ChatID, payload.Speaker, parsedTimestamp.Format(time.RFC3339), logTextPreview, len(payload.Text))
+
+	ctx := r.Context()
+
+	// *** REMOVED HARDCODED CHAT ID ***
+	chatID := payload.ChatID
+
+	// NOTE: We now assume the chat exists because the frontend wouldn't have a chatID otherwise.
+	// You could add a check here, but it might slow down logging. `EnsureChatExists` is less relevant
+	// now that chats are created explicitly.
+
+	userID, err := s.db.GetOrCreateChatUserByHandle(ctx, payload.Speaker)
+	if err != nil {
+		log.Printf("Error getting/creating user '%s' for transcript logging: %v", payload.Speaker, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to process user for logging transcript")
+		return
+	}
+
+	if err := s.db.SaveChatLine(ctx, chatID, userID, payload.Text, parsedTimestamp); err != nil {
+		log.Printf("Error saving chat line for ChatID %d, UserID %d (Transcript Log): %v", chatID, userID, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to save transcript log line")
+		return
+	}
+
+	// Summarization logic can remain here if desired, but is now less critical
+	// for the main logging functionality.
+
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Transcript logged successfully"})
+}
+
+// --- Other Handlers and Utilities (unchanged) ---
 func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -691,31 +811,29 @@ func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*") // Already handled by CORS middleware, but doesn't hurt
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	sessionID := r.Header.Get("X-Session-ID") // Prefer header for session ID
+	sessionID := r.Header.Get("X-Session-ID")
 	if sessionID == "" {
-		sessionID = r.URL.Query().Get("session_id") // Fallback to query param
+		sessionID = r.URL.Query().Get("session_id")
 	}
 	if sessionID == "" {
-		sessionID = s.cfg.DefaultADKSessionID // Fallback to default if still not found
+		sessionID = s.cfg.DefaultADKSessionID
 		log.Printf("SSE client connected for default session (session_id: %s), as none was provided in header or query.", sessionID)
 	} else {
 		log.Printf("SSE client connected for session_id: %s", sessionID)
 	}
 
-	clientChan := make(chan SSEEvent, 10) // Buffered channel for this client
+	clientChan := make(chan SSEEvent, 10)
 	s.sseClientMgr.register <- sseClientRegistrationHelper{sessionID: sessionID, client: clientChan}
 
 	defer func() {
 		s.sseClientMgr.unregister <- sseClientRegistrationHelper{sessionID: sessionID, client: clientChan}
-		// The manager will close the channel, no need to close it here.
 		log.Printf("SSE client HTTP handler for session %s returning and unregistering.", sessionID)
 	}()
 
-	// Send an acknowledgment event
 	ackPayload := map[string]string{"role": "system", "text": "SSE Connection Established to Go Backend for session " + sessionID, "status": "ACK"}
-	ackBytes, _ := json.Marshal(ackPayload) // Error handling for marshal can be added
+	ackBytes, _ := json.Marshal(ackPayload)
 	fmt.Fprintf(w, "event: connection_ack\ndata: %s\n\n", string(ackBytes))
 	flusher.Flush()
 
@@ -723,46 +841,39 @@ func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case <-ctx.Done(): // Client disconnected
+		case <-ctx.Done():
 			log.Printf("SSE client disconnected (context done) for session: %s", sessionID)
 			return
 
 		case event, open := <-clientChan:
 			if !open {
-				// Channel was closed by the manager (e.g., max clients reached for session, or manager shutting down)
 				log.Printf("SSE client channel closed by manager for session: %s. Handler exiting.", sessionID)
 				return
 			}
 			var dataBytes []byte
 			var marshalErr error
 
-			// Marshal the event payload. Assumes payload is JSON-compatible.
 			dataBytes, marshalErr = json.Marshal(event.Payload)
 			if marshalErr != nil {
 				log.Printf("Error marshalling SSE event payload for session %s, type %s: %v", sessionID, event.Type, marshalErr)
-				// Send an error event to the client if marshalling fails for a specific event
 				errorEvent := SSEEvent{Type: "marshal_error", ID: sessionID, Payload: map[string]string{"error": "failed to marshal event payload", "event_type": event.Type}}
 				errorBytes, _ := json.Marshal(errorEvent.Payload)
 				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", errorEvent.Type, string(errorBytes))
 				flusher.Flush()
-				continue // Skip sending the malformed event's original payload
+				continue
 			}
-
-			// Send event to client
-			// log.Printf("SSE: Sending event (type: %s, id: %s) to client for session %s", event.Type, event.ID, sessionID)
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, string(dataBytes))
 			flusher.Flush()
 		}
 	}
 }
 
-// handleAgentCommand (Example, if you want to send commands to ADK via Go backend's SSE)
 func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 	type CommandRequest struct {
-		SessionID string      `json:"session_id"`        // Target ADK session_id
-		UserID    string      `json:"user_id,omitempty"` // Supabase User ID (optional, for logging/context)
-		Command   string      `json:"command"`           // The command name/type
-		Payload   interface{} `json:"payload,omitempty"` // Command-specific data
+		SessionID string      `json:"session_id"`
+		UserID    string      `json:"user_id,omitempty"`
+		Command   string      `json:"command"`
+		Payload   interface{} `json:"payload,omitempty"`
 	}
 
 	var cmdReq CommandRequest
@@ -782,30 +893,21 @@ func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Received command for ADK session %s: %s, Supabase User: %s, Payload: %v", cmdReq.SessionID, cmdReq.Command, cmdReq.UserID, cmdReq.Payload)
-
-	// Acknowledge receipt via SSE to the *originating* session (if that's the design)
-	// Or, if command is meant for a different session, adjust SSE publishing.
-	// This example assumes command is for the session_id in the request.
 	s.sseClientMgr.Publish(cmdReq.SessionID, "command_ack", map[string]interface{}{
 		"command_received": cmdReq.Command,
 		"status":           "acknowledged_by_backend",
-		"details":          "Processing via ADK pending.", // Or forward command to ADK if that's the flow
+		"details":          "Processing via ADK pending.",
 		"original_payload": cmdReq.Payload,
 	})
-
-	// HTTP response indicates command was received by Go backend.
-	// Actual processing/forwarding to ADK would happen here or in a separate goroutine.
 	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Command '" + cmdReq.Command + "' received by Go backend, acknowledged via SSE."})
 }
 
-// --- ADK Task Execution Handler (for non-streaming, background-like tasks) ---
-
 func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	type TaskRequest struct {
-		UserID          string                 `json:"user_id,omitempty"`    // Supabase User ID
-		ToolName        string                 `json:"tool_name,omitempty"`  // Optional: specific tool to call
-		Parameters      map[string]interface{} `json:"parameters,omitempty"` // Parameters for the tool
-		TextInstruction string                 `json:"text,omitempty"`       // Natural language instruction for the agent
+		UserID          string                 `json:"user_id,omitempty"`
+		ToolName        string                 `json:"tool_name,omitempty"`
+		Parameters      map[string]interface{} `json:"parameters,omitempty"`
+		TextInstruction string                 `json:"text,omitempty"`
 	}
 	var taskReq TaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&taskReq); err != nil {
@@ -815,20 +917,17 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	supabaseUserID := taskReq.UserID
-	adkUserIDForTask := s.cfg.DefaultADKUserID // Default ADK user for tasks
+	adkUserIDForTask := s.cfg.DefaultADKUserID
 	if supabaseUserID != "" {
-		adkUserIDForTask = supabaseUserID // Use Supabase ID if provided
+		adkUserIDForTask = supabaseUserID
 	} else {
 		log.Println("Warning: Executing ADK task without a Supabase User ID. Context will be tied to the default ADK user.")
 	}
-
-	// Use a deterministic session ID for tasks related to a user, or a generic one
 	adkTaskSessionID := fmt.Sprintf("background_task_%s", SanitizeForID(adkUserIDForTask))
 	log.Printf("Using ADK Task Session ID: %s for ADK User: %s (derived from Supabase User: %s)", adkTaskSessionID, adkUserIDForTask, supabaseUserID)
 
-	// --- Step 1: Ensure ADK Session Exists ---
 	adkSessionURL := fmt.Sprintf("%s/apps/%s/users/%s/sessions/%s", s.cfg.ADKAgentBaseURL, s.cfg.ADKAgentAppName, adkUserIDForTask, adkTaskSessionID)
-	adkSessionPayload := ADKCreateSessionPayload{State: map[string]interface{}{}} // Empty state for session creation
+	adkSessionPayload := ADKCreateSessionPayload{State: map[string]interface{}{}}
 	sessionPayloadBytes, err := json.Marshal(adkSessionPayload)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error marshalling ADK session creation payload for task: "+err.Error())
@@ -847,17 +946,15 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusServiceUnavailable, "Error contacting ADK agent to ensure session for task: "+err.Error())
 		return
 	}
-	// Read the body for potential error message checking
 	sessionRespBodyBytes, readErr := io.ReadAll(adkSessionResp.Body)
 	if readErr != nil {
-		adkSessionResp.Body.Close() // Close original body if read fails
+		adkSessionResp.Body.Close()
 		log.Printf("Failed to read ADK session response body for task. ADK Status: %d. Error: %v", adkSessionResp.StatusCode, readErr)
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to read ADK session response for task. ADK Status: %d", adkSessionResp.StatusCode))
 		return
 	}
-	adkSessionResp.Body.Close() // Close original body now that it's read
+	adkSessionResp.Body.Close()
 
-	// Check status codes for "session ensured"
 	sessionEnsured := false
 	if adkSessionResp.StatusCode == http.StatusOK ||
 		adkSessionResp.StatusCode == http.StatusCreated ||
@@ -872,15 +969,13 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 
 	if !sessionEnsured {
 		log.Printf("Failed to ensure ADK session for task. ADK Status: %d, Body: %s", adkSessionResp.StatusCode, string(sessionRespBodyBytes))
-		w.Header().Set("Content-Type", "application/json") // Ensure JSON for error response
-		w.WriteHeader(adkSessionResp.StatusCode)           // Forward ADK's status code
-		w.Write(sessionRespBodyBytes)                      // Forward ADK's error body
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(adkSessionResp.StatusCode)
+		w.Write(sessionRespBodyBytes)
 		return
 	}
 	log.Printf("ADK session ensured for task (Status: %d). Proceeding to set state and run.", adkSessionResp.StatusCode)
-	// --- End Step 1 ---
 
-	// --- Step 2: Prepare and Set Auth Context in ADK Session State (if needed) ---
 	var authCtx map[string]interface{}
 	if supabaseUserID != "" &&
 		(strings.Contains(strings.ToLower(taskReq.ToolName), "gmail") ||
@@ -891,7 +986,6 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 			sessionStateUpdate := map[string]interface{}{"current_auth_context": authCtx}
 			if err := s.updateADKSessionState(r.Context(), adkUserIDForTask, adkTaskSessionID, sessionStateUpdate); err != nil {
 				log.Printf("Warning: Failed to update ADK session state with auth_context for %s/%s: %v. Task may fail if auth is required.", adkUserIDForTask, adkTaskSessionID, err)
-				// Do not hard fail here, let the ADK agent attempt the task. It might not need auth or might handle missing auth.
 			} else {
 				log.Printf("Successfully set auth_context in ADK session state for %s/%s.", adkUserIDForTask, adkTaskSessionID)
 			}
@@ -899,9 +993,7 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Auth context for Supabase user %s could not be prepared for task in ADK session %s. Task may fail if auth is required.", supabaseUserID, adkTaskSessionID)
 		}
 	}
-	// --- End Step 2 ---
 
-	// --- Step 3: Call ADK /run ---
 	adkMessageText := taskReq.TextInstruction
 	if adkMessageText == "" {
 		if taskReq.ToolName == "" {
@@ -921,8 +1013,7 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 			Role:  "user",
 			Parts: []ADKNewMessagePart{{Text: adkMessageText}},
 		},
-		Stream: false, // Background tasks typically expect a single response
-		// AuthContext: authCtx, // REMOVED - auth_context is now set via session state PUT
+		Stream: false,
 	}
 
 	runPayloadBytes, err := json.Marshal(adkRunPayload)
@@ -990,129 +1081,11 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// --- Transcript Logging Handler ---
-type TranscriptPayload struct {
-	Speaker   string `json:"speaker"`
-	Text      string `json:"text"`
-	Timestamp string `json:"timestamp"` // Expecting ISO 8601 format like "2023-10-26T10:00:00Z"
-	ChatId    int    `json:"ChatId"`
-	UserId    int    `json:"UserId"`
-}
 
-func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
-	var payload TranscriptPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		log.Printf("Error decoding transcript payload: %v", err)
-		respondWithError(w, http.StatusBadRequest, "Invalid request body for transcript")
-		return
-	}
-	defer r.Body.Close()
-
-	// Basic validation
-	payload.Text = strings.TrimSpace(payload.Text)
-	if payload.Speaker == "" || payload.Text == "" {
-		respondWithError(w, http.StatusBadRequest, "Bad Request: Missing speaker or text in transcript.")
-		return
-	}
-
-	// Parse timestamp, default to now if missing or unparseable
-	var parsedTimestamp time.Time
-	var errParse error
-	if payload.Timestamp != "" {
-		// Try common ISO 8601 formats, including with milliseconds and Z suffix
-		formatsToTry := []string{
-			time.RFC3339Nano,                // "2006-01-02T15:04:05.999999999Z07:00"
-			time.RFC3339,                    // "2006-01-02T15:04:05Z07:00"
-			"2006-01-02T15:04:05.000Z07:00", // Common JS Date.toISOString()
-			"2006-01-02T15:04:05Z07:00",     // Without milliseconds
-			time.RFC1123Z,
-			time.RFC1123,
-		}
-		for _, fmtStr := range formatsToTry {
-			parsedTimestamp, errParse = time.Parse(fmtStr, payload.Timestamp)
-			if errParse == nil {
-				break // Success
-			}
-		}
-		if errParse != nil {
-			log.Printf("Could not parse provided timestamp '%s' (Error: %v), defaulting to now (UTC)", payload.Timestamp, errParse)
-			parsedTimestamp = time.Now().UTC()
-		}
-	} else {
-		parsedTimestamp = time.Now().UTC()
-	}
-
-	// Log the received transcript (preview for brevity)
-	logTextPreview := payload.Text
-	maxPrevLen := 100
-	if len(logTextPreview) > maxPrevLen {
-		logTextPreview = logTextPreview[:maxPrevLen] + "..."
-	}
-	log.Printf("[Transcript Log] Speaker: %s, Time: %s, Preview: %q, FullLength: %d",
-		payload.Speaker, parsedTimestamp.Format(time.RFC3339), logTextPreview, len(payload.Text))
-
-	// --- Database Operations ---
-	ctx := r.Context() // Use request context for DB ops
-
-	// Assuming a single chat context for now (e.g., chat_id = 1)
-	// This could be made dynamic if your app supports multiple chat rooms/sessions for logging
-	chatID := payload.ChatId // Example chat ID
-
-	// Ensure chat exists
-	if err := s.db.EnsureChatExists(ctx, chatID); err != nil {
-		log.Printf("Error ensuring chat %d exists for transcript logging: %v", chatID, err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to ensure chat session for logging transcript")
-		return
-	}
-
-	// Get or create user ID
-	userID, err := s.db.GetOrCreateChatUserByHandle(ctx, payload.Speaker)
-	if err != nil {
-		log.Printf("Error getting/creating user '%s' for transcript logging: %v", payload.Speaker, err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to process user for logging transcript")
-		return
-	}
-
-	// Potentially update summary (simplified logic, consider background job for intensive summarization)
-	// This is a basic example; real summarization might be more complex
-	allChatTextForSummary, err := s.db.GetAllChatLinesText(ctx, chatID)
-	if err != nil {
-		log.Printf("Error fetching existing chat text for summarization (Transcript Log, ChatID %d): %v", chatID, err)
-		// Continue to save the line even if summarization context fails
-	} else {
-		fullTextToConsider := allChatTextForSummary + "\n" + payload.Text // Append new line
-		// Only summarize if text is substantial and summarizer is configured
-		if len(fullTextToConsider) > s.cfg.SummarizerMaxTokens*3 && s.smrz != nil { // Example threshold
-			log.Printf("Text length (%d) for ChatID %d (Transcript Log) exceeds threshold, attempting summarization.", len(fullTextToConsider), chatID)
-			summary, sumErr := s.smrz.Summarize(ctx, fullTextToConsider)
-			if sumErr == nil && strings.TrimSpace(summary) != "" {
-				if dbErr := s.db.UpdateChatSummary(ctx, chatID, summary); dbErr != nil {
-					log.Printf("Error updating chat summary for ChatID %d (Transcript Log): %v", chatID, dbErr)
-				} else {
-					log.Printf("ChatID %d summary updated via Transcript Log. New summary length: %d", chatID, len(summary))
-				}
-			} else if sumErr != nil {
-				log.Printf("Summarization failed for ChatID %d (Transcript Log): %v", chatID, sumErr)
-			}
-		}
-	}
-
-	// Save the chat line
-	if err := s.db.SaveChatLine(ctx, chatID, userID, payload.Text, parsedTimestamp); err != nil {
-		log.Printf("Error saving chat line for ChatID %d, UserID %d (Transcript Log): %v", chatID, userID, err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to save transcript log line")
-		return
-	}
-
-	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Transcript logged successfully"})
-}
-
-// --- Utility Functions ---
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	response, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Error marshalling JSON response: %v", err)
-		// Fallback to a simpler error message if marshalling the payload fails
 		http.Error(w, `{"error": "Internal server error during JSON marshalling"}`, http.StatusInternalServerError)
 		return
 	}
@@ -1125,185 +1098,22 @@ func respondWithError(w http.ResponseWriter, code int, message string) {
 	respondWithJSON(w, code, map[string]string{"error": message})
 }
 
-// SanitizeForID creates a string safe for use as part of an ID (e.g., session ID component).
 func SanitizeForID(input string) string {
 	var result strings.Builder
 	for _, r := range input {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			result.WriteRune(r)
 		} else {
-			result.WriteRune('_') // Replace non-alphanumeric with underscore
+			result.WriteRune('_')
 		}
 	}
-	const maxLength = 60 // Increased max length slightly for user IDs
+	const maxLength = 60
 	if result.Len() > maxLength {
 		return result.String()[:maxLength]
 	}
-	if result.Len() == 0 { // Handle empty or all-invalid input
+	if result.Len() == 0 {
 		return "default_id_part"
 	}
 	return result.String()
 }
 
-func (s *Server) CreateChatHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		respondWithError(w, http.StatusMethodNotAllowed, "Only POST method allowed")
-		return
-	}
-
-	var payload struct {
-		Title  string `json:"title"`
-		UserID string `json:"user_id"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid JSON payload")
-		return
-	}
-
-	if payload.Title == "" {
-		payload.Title = "New Chat"
-	}
-
-	if payload.UserID == "0" {
-		respondWithError(w, http.StatusBadRequest, "user_id is required")
-		return
-	}
-	fmt.Println(payload.UserID)
-	userIID := 1
-	chat, err := s.db.CreateChat(r.Context(), payload.Title, userIID)
-	if err != nil {
-		log.Printf("Error creating chat: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to create chat")
-		return
-	}
-
-	respondWithJSON(w, http.StatusCreated, chat)
-}
-
-// GetUserChatsHandler retrieves all chats for a user
-func (s *Server) GetUserChatsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		respondWithError(w, http.StatusMethodNotAllowed, "Only GET method allowed")
-		return
-	}
-
-	//userIDStr := r.URL.Query().Get("user_id")
-	userIDStr := "1"
-	if userIDStr == "" {
-		respondWithError(w, http.StatusBadRequest, "user_id query parameter is required")
-		return
-	}
-
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid user_id")
-		return
-	}
-
-	chats, err := s.db.GetUserChats(r.Context(), userID)
-	if err != nil {
-		log.Printf("Error retrieving user chats: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve chats")
-		return
-	}
-
-	respondWithJSON(w, http.StatusOK, map[string]interface{}{
-		"chats": chats,
-		"count": len(chats),
-	})
-}
-
-// UpdateChatHandler updates chat details
-func (s *Server) UpdateChatHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		respondWithError(w, http.StatusMethodNotAllowed, "Only PUT method allowed")
-		return
-	}
-
-	chatIDStr := r.URL.Query().Get("chat_id")
-	if chatIDStr == "" {
-		respondWithError(w, http.StatusBadRequest, "chat_id query parameter is required")
-		return
-	}
-
-	chatID, err := strconv.Atoi(chatIDStr)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
-		return
-	}
-
-	var payload struct {
-		Title  string `json:"title"`
-		UserID int    `json:"user_id"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid JSON payload")
-		return
-	}
-
-	if payload.UserID == 0 {
-		respondWithError(w, http.StatusBadRequest, "user_id is required")
-		return
-	}
-
-	if payload.Title == "" {
-		respondWithError(w, http.StatusBadRequest, "title is required")
-		return
-	}
-
-	err = s.db.UpdateChatTitle(r.Context(), chatID, payload.Title, payload.UserID)
-	if err != nil {
-		log.Printf("Error updating chat title: %v", err)
-		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "not found") {
-			respondWithError(w, http.StatusForbidden, "Chat not found or not authorized")
-			return
-		}
-		respondWithError(w, http.StatusInternalServerError, "Failed to update chat")
-		return
-	}
-
-	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat updated successfully"})
-}
-
-// DeleteChatHandler deletes a chat
-func (s *Server) DeleteChatHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		respondWithError(w, http.StatusMethodNotAllowed, "Only DELETE method allowed")
-		return
-	}
-
-	chatIDStr := r.URL.Query().Get("chat_id")
-	userIDStr := r.URL.Query().Get("user_id")
-
-	if chatIDStr == "" || userIDStr == "" {
-		respondWithError(w, http.StatusBadRequest, "chat_id and user_id query parameters are required")
-		return
-	}
-
-	chatID, err := strconv.Atoi(chatIDStr)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
-		return
-	}
-
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid user_id")
-		return
-	}
-
-	err = s.db.DeleteChat(r.Context(), chatID, userID)
-	if err != nil {
-		log.Printf("Error deleting chat: %v", err)
-		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "not found") {
-			respondWithError(w, http.StatusForbidden, "Chat not found or not authorized")
-			return
-		}
-		respondWithError(w, http.StatusInternalServerError, "Failed to delete chat")
-		return
-	}
-
-	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat deleted successfully"})
-}

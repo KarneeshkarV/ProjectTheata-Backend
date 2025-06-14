@@ -6,51 +6,54 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"errors"
 	"os/signal"
 	"syscall"
 	"time"
 )
 
-func gracefulShutdown(srv *http.Server, done chan bool) {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	<-ctx.Done()
-
-	log.Println("Shutdown signal received, attempting graceful shutdown...")
-
-	ctxShutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctxShutdown); err != nil {
-		log.Printf("Server forced to shutdown with error: %v", err)
-	} else {
-		log.Println("Server shutdown gracefully.")
-	}
-	close(done)
-}
-
 func main() {
+	// 1. Load Application Configuration
+	// This function reads from your .env file and environment variables.
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	mainHttpServer := server.NewServer(cfg)
+	// 2. Create the Server
+	// server.NewServer uses the configuration to initialize all dependencies
+	// (like the database, SSE manager, and Google services) and returns a
+	// fully configured http.Server ready to be started.
+	srv := server.NewServer(cfg)
 
-	done := make(chan bool, 1)
-	go gracefulShutdown(mainHttpServer, done)
+	// 3. Start the Server in a separate goroutine
+	// This allows the main goroutine to listen for shutdown signals.
+	go func() {
+		log.Printf("Server starting and listening on address %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Could not start server: %v\n", err)
+		}
+	}()
+	log.Println("Server successfully started.")
 
-	// Use mainHttpServer.Addr for the definitive listening address log
-	log.Printf("Go backend server starting. Listening on %s", mainHttpServer.Addr)
-	log.Printf("ADK agent proxy configured for: %s", cfg.ADKAgentBaseURL) // This is fine as is
-	log.Println("API Endpoints are registered under /api by the server router.")
-	log.Println("Google OAuth Endpoints: GET /api/auth/google/login, GET /api/auth/google/callback")
+	// 4. Graceful Shutdown
+	// Set up a channel to listen for OS signals (like Ctrl+C).
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	if err := mainHttpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Could not listen on %s: %v\n", mainHttpServer.Addr, err)
+	// Block until a signal is received.
+	<-quit
+	log.Println("Shutdown signal received, starting graceful shutdown...")
+
+	// Create a context with a timeout to allow existing connections to finish.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Attempt to gracefully shut down the server.
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown with error: %v", err)
 	}
 
-	<-done
-	log.Println("Main application goroutine finished.")
+	log.Println("Server exited gracefully.")
 }
