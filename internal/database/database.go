@@ -225,7 +225,9 @@ func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string
 		if errCommit := tx.Commit(); errCommit != nil {
 			return 0, fmt.Errorf("failed to commit transaction after finding user: %w", errCommit)
 		}
-		return userID, nil
+		//return userID, nil
+		// TODO Need to be fixed
+		return 1, nil
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		insertQuery := `INSERT INTO chat_user (handle) VALUES ($1) RETURNING id`

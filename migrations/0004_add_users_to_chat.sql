@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS chat_participants (
     user_id INT NOT NULL REFERENCES chat_user(id) ON DELETE CASCADE,
     joined_at TIMESTAMPTZ DEFAULT NOW(),
     role VARCHAR(20) DEFAULT 'member', -- 'owner', 'member', 'admin'
+    -- change default to owner
     UNIQUE(chat_id, user_id)
 );
 

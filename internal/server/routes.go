@@ -246,7 +246,7 @@ func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
-	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Hello World from Go Backend!"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Hello World"})
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -995,6 +995,8 @@ type TranscriptPayload struct {
 	Speaker   string `json:"speaker"`
 	Text      string `json:"text"`
 	Timestamp string `json:"timestamp"` // Expecting ISO 8601 format like "2023-10-26T10:00:00Z"
+	ChatId    int    `json:"ChatId"`
+	UserId    int    `json:"UserId"`
 }
 
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
@@ -1054,7 +1056,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 
 	// Assuming a single chat context for now (e.g., chat_id = 1)
 	// This could be made dynamic if your app supports multiple chat rooms/sessions for logging
-	chatID := 1 // Example chat ID
+	chatID := payload.ChatId // Example chat ID
 
 	// Ensure chat exists
 	if err := s.db.EnsureChatExists(ctx, chatID); err != nil {
@@ -1151,7 +1153,7 @@ func (s *Server) CreateChatHandler(w http.ResponseWriter, r *http.Request) {
 
 	var payload struct {
 		Title  string `json:"title"`
-		UserID int    `json:"user_id"`
+		UserID string `json:"user_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -1163,12 +1165,13 @@ func (s *Server) CreateChatHandler(w http.ResponseWriter, r *http.Request) {
 		payload.Title = "New Chat"
 	}
 
-	if payload.UserID == 0 {
+	if payload.UserID == "0" {
 		respondWithError(w, http.StatusBadRequest, "user_id is required")
 		return
 	}
-
-	chat, err := s.db.CreateChat(r.Context(), payload.Title, payload.UserID)
+	fmt.Println(payload.UserID)
+	userIID := 1
+	chat, err := s.db.CreateChat(r.Context(), payload.Title, userIID)
 	if err != nil {
 		log.Printf("Error creating chat: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to create chat")
@@ -1185,7 +1188,8 @@ func (s *Server) GetUserChatsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userIDStr := r.URL.Query().Get("user_id")
+	//userIDStr := r.URL.Query().Get("user_id")
+	userIDStr := "1"
 	if userIDStr == "" {
 		respondWithError(w, http.StatusBadRequest, "user_id query parameter is required")
 		return
