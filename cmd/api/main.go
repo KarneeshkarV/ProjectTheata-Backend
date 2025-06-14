@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"backend/internal/config"
+	"backend/internal/server"
 	"log"
 	"net/http"
 	"os/signal"
@@ -563,16 +565,24 @@ func handleExecuteTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Graceful Shutdown ---
+
+)
+
 func gracefulShutdown(srv *http.Server, done chan bool) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
+
 	log.Println("Shutting down gracefully, press Ctrl+C again to force")
 	ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	if err := srv.Shutdown(ctxShutdown); err != nil {
 		log.Printf("Server forced to shutdown with error: %v", err)
+	} else {
+		log.Println("Server shutdown gracefully.")
 	}
+
 	log.Println("Server exiting")
 
 	// Notify the main goroutine that the shutdown is complete
@@ -647,3 +657,4 @@ func min(a, b int) int {
 	}
 	return b
 }
+
