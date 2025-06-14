@@ -19,31 +19,14 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-
-type ChatWithDetails struct {
-	Chat
-	ParticipantCount int        `json:"participant_count"`
-	LastMessage      string     `json:"last_message,omitempty"`
-	LastMessageAt    *time.Time `json:"last_message_at,omitempty"`
-}
-type Chat struct {
-	ID        int            `json:"id"`
-	Title     string         `json:"title"`
-	Summary   sql.NullString `json:"summary,omitempty"`
-	CreatedBy sql.NullInt64  `json:"created_by,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	IsActive  bool           `json:"is_active"`
-}
-
-
+// Struct definitions remain the same...
 type ChatLine struct {
-	ID         int64
-	ChatID     int
-	UserID     int
-	UserHandle string
-	LineText   string
-	CreatedAt  time.Time
+	ID         int64     `json:"id"`
+	ChatID     int       `json:"chat_id"`
+	UserID     int       `json:"-"` // Hide internal user ID from JSON
+	UserHandle string    `json:"speaker"`
+	LineText   string    `json:"text"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type LastMessagePreview struct {
@@ -86,12 +69,10 @@ type Service interface {
 	GetAllChatLinesText(ctx context.Context, chatid int) (string, error)
 	GetUserGoogleToken(ctx context.Context, supabaseUserID string) (*UserGoogleToken, error)
 	SaveOrUpdateUserGoogleToken(ctx context.Context, token UserGoogleToken) error
-
 	CreateChat(ctx context.Context, title string, userID string) (*Chat, error)
 	GetChatsForUser(ctx context.Context, userID string) ([]Chat, error)
 	UpdateChat(ctx context.Context, chatID int, title string, userID string) error
 	DeleteChat(ctx context.Context, chatID int, userID string) error
-
 }
 
 type service struct {
@@ -113,8 +94,6 @@ func New() Service {
 		return dbInstance
 	}
 
-	// *** THE FIX IS HERE: Add ',auth' to the search_path parameter ***
-	// This tells PostgreSQL to look for tables in our main schema AND the auth schema.
 	connStr := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s,auth",
 		username,
@@ -171,9 +150,6 @@ func New() Service {
 	dbInstance = &service{db: db}
 	return dbInstance
 }
-
-// --- ALL OTHER METHODS (Health, CreateChat, GetChatsForUser, etc.) remain unchanged ---
-// The rest of the file is identical to the previous version.
 func (s *service) Health() map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -229,9 +205,7 @@ func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string
 		if errCommit := tx.Commit(); errCommit != nil {
 			return 0, fmt.Errorf("failed to commit transaction after finding user: %w", errCommit)
 		}
-		//return userID, nil
-		// TODO Need to be fixed
-		return 1, nil
+		return userID, nil
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		insertQuery := `INSERT INTO chat_user (handle) VALUES ($1) RETURNING id`
@@ -255,7 +229,6 @@ func (s *service) SaveChatLine(ctx context.Context, chatID int, userID int, text
 	}
 	return nil
 }
-
 
 func (s *service) GetTotalChatLength(ctx context.Context, chatID int) (int, error) {
 	var totalLength int
@@ -644,4 +617,3 @@ func (s *service) Close() error {
 	log.Println("Database connection already closed or never opened.")
 	return nil
 }
-

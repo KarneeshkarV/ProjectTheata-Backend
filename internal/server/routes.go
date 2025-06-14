@@ -1,12 +1,17 @@
 package server
 
 import (
+	"backend/internal/database"
 	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"golang.org/x/oauth2/google"
 	"io"
 	"log"
 	"net/http"
@@ -15,11 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"strconv"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
-	"golang.org/x/oauth2/google"
 )
 
 // SSE structures remain unchanged
@@ -158,21 +158,41 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Post("/tasks/execute", s.handleExecuteADKTask)
 		r.Post("/text", s.handleTranscript)
 
-		// --- NEW ROUTES FOR CHAT MANAGEMENT ---
 		r.Get("/chats", s.handleGetChats)
 		r.Post("/chats/create", s.handleCreateChat)
 		r.Put("/chats/update", s.handleUpdateChat)
 		r.Delete("/chats/delete", s.handleDeleteChat)
-
+		r.Get("/chat/history", s.handleGetChatHistory) // <<< NEW ROUTE
 	})
-
 	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	return r
 }
 
-// --- NEW CHAT HANDLERS ---
+// <<< NEW HANDLER >>>
+func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
+	chatIDStr := r.URL.Query().Get("chat_id")
+	chatID, err := strconv.Atoi(chatIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid or missing chat_id")
+		return
+	}
+
+	history, err := s.db.GetChatHistory(r.Context(), chatID)
+	if err != nil {
+		log.Printf("Error getting chat history for chat %d: %v", chatID, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve chat history")
+		return
+	}
+
+	if history == nil {
+		history = []database.ChatLine{}
+	}
+
+	respondWithJSON(w, http.StatusOK, history)
+}
+
 func (s *Server) handleGetChats(w http.ResponseWriter, r *http.Request) {
 	userID := r.URL.Query().Get("user_id")
 	if userID == "" {
@@ -187,7 +207,6 @@ func (s *Server) handleGetChats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The frontend expects a specific structure
 	responsePayload := map[string]interface{}{
 		"chats": chats,
 	}
@@ -273,7 +292,6 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Chat deleted successfully"})
 }
 
-// --- existing handlers (some are modified) ---
 func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -330,7 +348,7 @@ func (s *Server) WolfFromAlpha(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
-	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Hello World"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Hello World from Go Backend!"})
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -389,7 +407,6 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{"connected": false, "reason": "token_record_missing_or_empty"})
 }
 
-// --- Structs for ADK Agent Interaction ---
 type CreateSessionRequest struct {
 	UserID       string                 `json:"user_id"`
 	SessionID    string                 `json:"session_id"`
@@ -723,12 +740,11 @@ func (s *Server) handleSendAgentQuery(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// --- Transcript Logging Handler (MODIFIED) ---
 type TranscriptPayload struct {
 	Speaker   string `json:"speaker"`
 	Text      string `json:"text"`
 	Timestamp string `json:"timestamp"`
-	ChatID    int    `json:"chat_id"` // *** ADDED THIS LINE ***
+	ChatID    int    `json:"chat_id"`
 }
 
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
@@ -741,7 +757,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	payload.Text = strings.TrimSpace(payload.Text)
-	if payload.Speaker == "" || payload.Text == "" || payload.ChatID == 0 { // *** VALIDATE CHAT_ID ***
+	if payload.Speaker == "" || payload.Text == "" || payload.ChatID == 0 {
 		respondWithError(w, http.StatusBadRequest, "Bad Request: Missing speaker, text, or chat_id in transcript.")
 		return
 	}
@@ -773,14 +789,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		payload.ChatID, payload.Speaker, parsedTimestamp.Format(time.RFC3339), logTextPreview, len(payload.Text))
 
 	ctx := r.Context()
-
-	// *** REMOVED HARDCODED CHAT ID ***
 	chatID := payload.ChatID
-
-	// NOTE: We now assume the chat exists because the frontend wouldn't have a chatID otherwise.
-	// You could add a check here, but it might slow down logging. `EnsureChatExists` is less relevant
-	// now that chats are created explicitly.
-
 	userID, err := s.db.GetOrCreateChatUserByHandle(ctx, payload.Speaker)
 	if err != nil {
 		log.Printf("Error getting/creating user '%s' for transcript logging: %v", payload.Speaker, err)
@@ -793,14 +802,8 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusInternalServerError, "Failed to save transcript log line")
 		return
 	}
-
-	// Summarization logic can remain here if desired, but is now less critical
-	// for the main logging functionality.
-
 	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Transcript logged successfully"})
 }
-
-// --- Other Handlers and Utilities (unchanged) ---
 func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -927,6 +930,9 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Using ADK Task Session ID: %s for ADK User: %s (derived from Supabase User: %s)", adkTaskSessionID, adkUserIDForTask, supabaseUserID)
 
 	adkSessionURL := fmt.Sprintf("%s/apps/%s/users/%s/sessions/%s", s.cfg.ADKAgentBaseURL, s.cfg.ADKAgentAppName, adkUserIDForTask, adkTaskSessionID)
+
+	log.Println("---------------------")
+	log.Println("The string is %d ", adkSessionURL)
 	adkSessionPayload := ADKCreateSessionPayload{State: map[string]interface{}{}}
 	sessionPayloadBytes, err := json.Marshal(adkSessionPayload)
 	if err != nil {
@@ -1003,7 +1009,9 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 		paramsJSON, _ := json.Marshal(taskReq.Parameters)
 		adkMessageText = fmt.Sprintf("Execute tool '%s' with parameters: %s", taskReq.ToolName, string(paramsJSON))
 	}
-
+	if supabaseUserID != "" {
+		adkMessageText = fmt.Sprintf("%s\n\n(Context: The user_id for this session is '%s')", adkMessageText, supabaseUserID)
+	}
 	adkRunURL := fmt.Sprintf("%s/run", s.cfg.ADKAgentBaseURL)
 	adkRunPayload := ADKRunPayload{
 		AppName:   s.cfg.ADKAgentAppName,
@@ -1081,7 +1089,6 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	response, err := json.Marshal(payload)
 	if err != nil {
@@ -1116,4 +1123,3 @@ func SanitizeForID(input string) string {
 	}
 	return result.String()
 }
-
