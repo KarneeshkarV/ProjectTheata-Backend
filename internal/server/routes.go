@@ -162,7 +162,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Post("/chats/create", s.handleCreateChat)
 		r.Put("/chats/update", s.handleUpdateChat)
 		r.Delete("/chats/delete", s.handleDeleteChat)
-		r.Get("/chat/history", s.handleGetChatHistory) // <<< NEW ROUTE
+		r.Get("/chat/history", s.handleGetChatHistory)
 	})
 	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -170,7 +170,6 @@ func (s *Server) RegisterRoutes() http.Handler {
 	return r
 }
 
-// <<< NEW HANDLER >>>
 func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
 	chatIDStr := r.URL.Query().Get("chat_id")
 	chatID, err := strconv.Atoi(chatIDStr)
@@ -375,7 +374,7 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 	log.Printf("Handling Google Auth Status request for Supabase User ID: %s", supabaseUserID)
 	token, err := s.db.GetUserGoogleToken(r.Context(), supabaseUserID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) || token == nil {
 			log.Printf("No Google token found in DB for Supabase User ID: %s", supabaseUserID)
 			respondWithJSON(w, http.StatusOK, map[string]interface{}{"connected": false, "reason": "no_token_found_in_db"})
 			return
@@ -385,7 +384,7 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if token != nil && token.EncryptedAccessToken != "" {
+	if token.EncryptedAccessToken != "" {
 		isLikelyConnected := true
 		reason := "token_exists"
 		if token.TokenExpiry.Valid && time.Now().After(token.TokenExpiry.Time.Add(-5*time.Minute)) {
@@ -931,8 +930,6 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 
 	adkSessionURL := fmt.Sprintf("%s/apps/%s/users/%s/sessions/%s", s.cfg.ADKAgentBaseURL, s.cfg.ADKAgentAppName, adkUserIDForTask, adkTaskSessionID)
 
-	log.Println("---------------------")
-	log.Println("The string is %d ", adkSessionURL)
 	adkSessionPayload := ADKCreateSessionPayload{State: map[string]interface{}{}}
 	sessionPayloadBytes, err := json.Marshal(adkSessionPayload)
 	if err != nil {

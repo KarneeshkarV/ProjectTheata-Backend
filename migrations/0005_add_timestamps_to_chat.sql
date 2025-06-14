@@ -37,11 +37,9 @@ END
 $$;
 -- +goose StatementEnd
 
-
 -- +goose Down
 -- The Down migration uses IF EXISTS to ensure it can run without errors
 -- even if the objects have already been removed.
-
 -- +goose StatementBegin
 -- Drop the trigger if it exists on the chat table.
 DROP TRIGGER IF EXISTS set_chat_updated_at ON chat;
@@ -50,7 +48,6 @@ DROP TRIGGER IF EXISTS set_chat_updated_at ON chat;
 -- +goose StatementBegin
 -- Note: We don't drop the trigger_set_timestamp() function here, as other
 -- tables might be using it. It's generally safe to leave helper functions.
-
 -- Drop the columns if they exist.
 ALTER TABLE chat
 DROP COLUMN IF EXISTS updated_at,
