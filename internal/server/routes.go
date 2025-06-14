@@ -4,9 +4,9 @@ import (
 	"backend/internal/database"
 	"bytes"
 	"context"
-	"database/sql"
+	_"database/sql"
 	"encoding/json"
-	"errors"
+	_"errors"
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -16,7 +16,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"strconv"
+	_"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,7 +162,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Post("/chats/create", s.handleCreateChat)
 		r.Put("/chats/update", s.handleUpdateChat)
 		r.Delete("/chats/delete", s.handleDeleteChat)
-		r.Get("/chat/history", s.handleGetChatHistory) // <<< NEW ROUTE
+		r.Get("/chat/history", s.handleGetChatHistory)
 	})
 	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -170,18 +170,16 @@ func (s *Server) RegisterRoutes() http.Handler {
 	return r
 }
 
-// <<< NEW HANDLER >>>
 func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
-	chatIDStr := r.URL.Query().Get("chat_id")
-	chatID, err := strconv.Atoi(chatIDStr)
-	if err != nil {
+	chatID := r.URL.Query().Get("chat_id")
+	if chatID == "" {
 		respondWithError(w, http.StatusBadRequest, "Invalid or missing chat_id")
 		return
 	}
 
 	history, err := s.db.GetChatHistory(r.Context(), chatID)
 	if err != nil {
-		log.Printf("Error getting chat history for chat %d: %v", chatID, err)
+		log.Printf("Error getting chat history for chat %s: %v", chatID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve chat history")
 		return
 	}
@@ -239,9 +237,8 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
-	chatIDStr := r.URL.Query().Get("chat_id")
-	chatID, err := strconv.Atoi(chatIDStr)
-	if err != nil {
+	chatID := r.URL.Query().Get("chat_id")
+	if chatID == "" {
 		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
 		return
 	}
@@ -259,9 +256,9 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = s.db.UpdateChat(r.Context(), chatID, payload.Title, payload.UserID)
+	err := s.db.UpdateChat(r.Context(), chatID, payload.Title, payload.UserID)
 	if err != nil {
-		log.Printf("Error updating chat %d for user %s: %v", chatID, payload.UserID, err)
+		log.Printf("Error updating chat %s for user %s: %v", chatID, payload.UserID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update chat")
 		return
 	}
@@ -270,9 +267,8 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
-	chatIDStr := r.URL.Query().Get("chat_id")
-	chatID, err := strconv.Atoi(chatIDStr)
-	if err != nil {
+	chatID := r.URL.Query().Get("chat_id")
+	if chatID == "" {
 		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
 		return
 	}
@@ -282,9 +278,9 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = s.db.DeleteChat(r.Context(), chatID, userID)
+	err := s.db.DeleteChat(r.Context(), chatID, userID)
 	if err != nil {
-		log.Printf("Error deleting chat %d for user %s: %v", chatID, userID, err)
+		log.Printf("Error deleting chat %s for user %s: %v", chatID, userID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete chat")
 		return
 	}
@@ -373,19 +369,25 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	log.Printf("Handling Google Auth Status request for Supabase User ID: %s", supabaseUserID)
-	token, err := s.db.GetUserGoogleToken(r.Context(), supabaseUserID)
+	// Use the service layer for consistency and check for both error and nil token.
+	token, err := s.googleAuthSvc.GetEncryptedTokensBySupabaseUserID(r.Context(), supabaseUserID)
+
+	// 1. First, check for a hard database/processing error.
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("No Google token found in DB for Supabase User ID: %s", supabaseUserID)
-			respondWithJSON(w, http.StatusOK, map[string]interface{}{"connected": false, "reason": "no_token_found_in_db"})
-			return
-		}
 		log.Printf("Error fetching Google token for Supabase User ID %s: %v", supabaseUserID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to fetch token status from database")
 		return
 	}
 
-	if token != nil && token.EncryptedAccessToken != "" {
+	// 2. Second, check if the token is nil (which means "not found"). This prevents the panic.
+	if token == nil {
+		log.Printf("No Google token found in DB for Supabase User ID: %s", supabaseUserID)
+		respondWithJSON(w, http.StatusOK, map[string]interface{}{"connected": false, "reason": "no_token_found_in_db"})
+		return
+	}
+
+	// 3. Now it is safe to access the token's fields.
+	if token.EncryptedAccessToken != "" {
 		isLikelyConnected := true
 		reason := "token_exists"
 		if token.TokenExpiry.Valid && time.Now().After(token.TokenExpiry.Time.Add(-5*time.Minute)) {
@@ -398,7 +400,7 @@ func (s *Server) handleGoogleAuthStatus(w http.ResponseWriter, r *http.Request) 
 				log.Printf("Token for Supabase User %s exists but may need refresh (expiry: %s).", supabaseUserID, token.TokenExpiry.Time)
 			}
 		}
-		log.Printf("Google token found for Supabase User ID: %s. Reporting connected: %t, Reason: %s", supabaseUserID, isLikelyConnected, reason)
+		log.Printf("Google token status for Supabase User ID: %s. Reporting connected: %t, Reason: %s", supabaseUserID, isLikelyConnected, reason)
 		respondWithJSON(w, http.StatusOK, map[string]interface{}{"connected": isLikelyConnected, "reason": reason})
 		return
 	}
@@ -744,7 +746,7 @@ type TranscriptPayload struct {
 	Speaker   string `json:"speaker"`
 	Text      string `json:"text"`
 	Timestamp string `json:"timestamp"`
-	ChatID    int    `json:"chat_id"`
+	ChatID    string `json:"chat_id"`
 }
 
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
@@ -757,7 +759,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	payload.Text = strings.TrimSpace(payload.Text)
-	if payload.Speaker == "" || payload.Text == "" || payload.ChatID == 0 {
+	if payload.Speaker == "" || payload.Text == "" || payload.ChatID == "" {
 		respondWithError(w, http.StatusBadRequest, "Bad Request: Missing speaker, text, or chat_id in transcript.")
 		return
 	}
@@ -785,7 +787,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	if len(logTextPreview) > maxPrevLen {
 		logTextPreview = logTextPreview[:maxPrevLen] + "..."
 	}
-	log.Printf("[Transcript Log] ChatID: %d, Speaker: %s, Time: %s, Preview: %q, FullLength: %d",
+	log.Printf("[Transcript Log] ChatID: %s, Speaker: %s, Time: %s, Preview: %q, FullLength: %d",
 		payload.ChatID, payload.Speaker, parsedTimestamp.Format(time.RFC3339), logTextPreview, len(payload.Text))
 
 	ctx := r.Context()
@@ -798,7 +800,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.db.SaveChatLine(ctx, chatID, userID, payload.Text, parsedTimestamp); err != nil {
-		log.Printf("Error saving chat line for ChatID %d, UserID %d (Transcript Log): %v", chatID, userID, err)
+		log.Printf("Error saving chat line for ChatID %s, UserID %s (Transcript Log): %v", chatID, userID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to save transcript log line")
 		return
 	}
@@ -931,8 +933,6 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 
 	adkSessionURL := fmt.Sprintf("%s/apps/%s/users/%s/sessions/%s", s.cfg.ADKAgentBaseURL, s.cfg.ADKAgentAppName, adkUserIDForTask, adkTaskSessionID)
 
-	log.Println("---------------------")
-	log.Println("The string is %d ", adkSessionURL)
 	adkSessionPayload := ADKCreateSessionPayload{State: map[string]interface{}{}}
 	sessionPayloadBytes, err := json.Marshal(adkSessionPayload)
 	if err != nil {

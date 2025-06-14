@@ -19,11 +19,11 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-// Struct definitions remain the same...
+// Struct definitions have been updated to use 'string' for UUIDs.
 type ChatLine struct {
-	ID         int64     `json:"id"`
-	ChatID     int       `json:"chat_id"`
-	UserID     int       `json:"-"` // Hide internal user ID from JSON
+	ID         string    `json:"id"`
+	ChatID     string    `json:"chat_id"`
+	UserID     string    `json:"-"` // This is a UUID from chat_user table.
 	UserHandle string    `json:"speaker"`
 	LineText   string    `json:"text"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -36,7 +36,7 @@ type LastMessagePreview struct {
 }
 
 type Chat struct {
-	ID               int                 `json:"id"`
+	ID               string              `json:"id"`
 	Title            string              `json:"title"`
 	ParticipantCount int                 `json:"participant_count"`
 	UserRole         string              `json:"user_role"`
@@ -57,22 +57,23 @@ type UserGoogleToken struct {
 	NeedsNewRefreshToken  bool
 }
 
+// Service interface updated to use 'string' for chat/user IDs.
 type Service interface {
 	Health() map[string]string
 	Close() error
-	GetOrCreateChatUserByHandle(ctx context.Context, handle string) (int, error)
-	SaveChatLine(ctx context.Context, chatID int, userID int, text string, timestamp time.Time) error
-	EnsureChatExists(ctx context.Context, chatID int) error
-	GetTotalChatLength(ctx context.Context, chatID int) (int, error)
-	GetChatHistory(ctx context.Context, chatID int) ([]ChatLine, error)
-	UpdateChatSummary(ctx context.Context, chatID int, summary string) error
-	GetAllChatLinesText(ctx context.Context, chatid int) (string, error)
+	GetOrCreateChatUserByHandle(ctx context.Context, handle string) (string, error)
+	SaveChatLine(ctx context.Context, chatID string, userID string, text string, timestamp time.Time) error
+	EnsureChatExists(ctx context.Context, chatID string) error
+	GetTotalChatLength(ctx context.Context, chatID string) (int, error)
+	GetChatHistory(ctx context.Context, chatID string) ([]ChatLine, error)
+	UpdateChatSummary(ctx context.Context, chatID string, summary string) error
+	GetAllChatLinesText(ctx context.Context, chatid string) (string, error)
 	GetUserGoogleToken(ctx context.Context, supabaseUserID string) (*UserGoogleToken, error)
 	SaveOrUpdateUserGoogleToken(ctx context.Context, token UserGoogleToken) error
 	CreateChat(ctx context.Context, title string, userID string) (*Chat, error)
 	GetChatsForUser(ctx context.Context, userID string) ([]Chat, error)
-	UpdateChat(ctx context.Context, chatID int, title string, userID string) error
-	DeleteChat(ctx context.Context, chatID int, userID string) error
+	UpdateChat(ctx context.Context, chatID string, title string, userID string) error
+	DeleteChat(ctx context.Context, chatID string, userID string) error
 }
 
 type service struct {
@@ -182,20 +183,20 @@ func (s *service) Health() map[string]string {
 	return stats
 }
 
-func (s *service) EnsureChatExists(ctx context.Context, chatID int) error {
+func (s *service) EnsureChatExists(ctx context.Context, chatID string) error {
 	query := `INSERT INTO chat (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`
 	_, err := s.db.ExecContext(ctx, query, chatID)
 	if err != nil {
-		return fmt.Errorf("failed to ensure chat exists (id %d): %w", chatID, err)
+		return fmt.Errorf("failed to ensure chat exists (id %s): %w", chatID, err)
 	}
 	return nil
 }
 
-func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string) (int, error) {
-	var userID int
+func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string) (string, error) {
+	var userID string
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+		return "", fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -203,7 +204,7 @@ func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string
 	err = tx.QueryRowContext(ctx, selectQuery, handle).Scan(&userID)
 	if err == nil {
 		if errCommit := tx.Commit(); errCommit != nil {
-			return 0, fmt.Errorf("failed to commit transaction after finding user: %w", errCommit)
+			return "", fmt.Errorf("failed to commit transaction after finding user: %w", errCommit)
 		}
 		return userID, nil
 	}
@@ -211,17 +212,17 @@ func (s *service) GetOrCreateChatUserByHandle(ctx context.Context, handle string
 		insertQuery := `INSERT INTO chat_user (handle) VALUES ($1) RETURNING id`
 		errInsert := tx.QueryRowContext(ctx, insertQuery, handle).Scan(&userID)
 		if errInsert != nil {
-			return 0, fmt.Errorf("failed to insert new chat user '%s': %w", handle, errInsert)
+			return "", fmt.Errorf("failed to insert new chat user '%s': %w", handle, errInsert)
 		}
 		if errCommit := tx.Commit(); errCommit != nil {
-			return 0, fmt.Errorf("failed to commit transaction after inserting user: %w", errCommit)
+			return "", fmt.Errorf("failed to commit transaction after inserting user: %w", errCommit)
 		}
 		return userID, nil
 	}
-	return 0, fmt.Errorf("failed to query chat user '%s': %w", handle, err)
+	return "", fmt.Errorf("failed to query chat user '%s': %w", handle, err)
 }
 
-func (s *service) SaveChatLine(ctx context.Context, chatID int, userID int, text string, timestamp time.Time) error {
+func (s *service) SaveChatLine(ctx context.Context, chatID string, userID string, text string, timestamp time.Time) error {
 	query := `INSERT INTO chat_line (chat_id, user_id, line_text, created_at) VALUES ($1, $2, $3, $4)`
 	_, err := s.db.ExecContext(ctx, query, chatID, userID, text, timestamp)
 	if err != nil {
@@ -230,7 +231,7 @@ func (s *service) SaveChatLine(ctx context.Context, chatID int, userID int, text
 	return nil
 }
 
-func (s *service) GetTotalChatLength(ctx context.Context, chatID int) (int, error) {
+func (s *service) GetTotalChatLength(ctx context.Context, chatID string) (int, error) {
 	var totalLength int
 	query := `SELECT COALESCE(SUM(LENGTH(line_text)), 0) FROM chat_line WHERE chat_id = $1`
 	err := s.db.QueryRowContext(ctx, query, chatID).Scan(&totalLength)
@@ -238,12 +239,12 @@ func (s *service) GetTotalChatLength(ctx context.Context, chatID int) (int, erro
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("failed to query total chat length for chat_id %d: %w", chatID, err)
+		return 0, fmt.Errorf("failed to query total chat length for chat_id %s: %w", chatID, err)
 	}
 	return totalLength, nil
 }
 
-func (s *service) GetChatHistory(ctx context.Context, chatID int) ([]ChatLine, error) {
+func (s *service) GetChatHistory(ctx context.Context, chatID string) ([]ChatLine, error) {
 	query := `
 		SELECT
 			cl.id, cl.chat_id, cl.user_id, cu.handle, cl.line_text, cl.created_at
@@ -258,7 +259,7 @@ func (s *service) GetChatHistory(ctx context.Context, chatID int) ([]ChatLine, e
 
 	rows, err := s.db.QueryContext(ctx, query, chatID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query chat history for chat_id %d: %w", chatID, err)
+		return nil, fmt.Errorf("failed to query chat history for chat_id %s: %w", chatID, err)
 	}
 	defer rows.Close()
 
@@ -274,40 +275,40 @@ func (s *service) GetChatHistory(ctx context.Context, chatID int) ([]ChatLine, e
 			&line.CreatedAt,
 		)
 		if err != nil {
-			log.Printf("Error scanning chat line row for chat_id %d: %v", chatID, err)
+			log.Printf("Error scanning chat line row for chat_id %s: %v", chatID, err)
 			continue
 		}
 		history = append(history, line)
 	}
 	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating over chat history rows for chat_id %d: %w", chatID, err)
+		return nil, fmt.Errorf("error iterating over chat history rows for chat_id %s: %w", chatID, err)
 	}
 	return history, nil
 }
 
-func (s *service) UpdateChatSummary(ctx context.Context, chatID int, summary string) error {
+func (s *service) UpdateChatSummary(ctx context.Context, chatID string, summary string) error {
 	query := `UPDATE chat SET summary = $1 WHERE id = $2`
 	result, err := s.db.ExecContext(ctx, query, summary, chatID)
 	if err != nil {
-		return fmt.Errorf("failed to update summary for chat_id %d: %w", chatID, err)
+		return fmt.Errorf("failed to update summary for chat_id %s: %w", chatID, err)
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		log.Printf("Could not determine rows affected for chat summary update (chat_id %d): %v", chatID, err)
+		log.Printf("Could not determine rows affected for chat summary update (chat_id %s): %v", chatID, err)
 	} else if rowsAffected == 0 {
-		log.Printf("WARN: UpdateChatSummary affected 0 rows for chat_id %d. Does the chat exist?", chatID)
+		log.Printf("WARN: UpdateChatSummary affected 0 rows for chat_id %s. Does the chat exist?", chatID)
 	}
 	return nil
 }
 
-func (s *service) GetAllChatLinesText(ctx context.Context, chatID int) (string, error) {
+func (s *service) GetAllChatLinesText(ctx context.Context, chatID string) (string, error) {
 	query := `SELECT line_text FROM chat_line WHERE chat_id = $1 ORDER BY created_at ASC`
 	rows, err := s.db.QueryContext(ctx, query, chatID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
-		return "", fmt.Errorf("failed to query chat lines for chat_id %d: %w", chatID, err)
+		return "", fmt.Errorf("failed to query chat lines for chat_id %s: %w", chatID, err)
 	}
 	defer rows.Close()
 
@@ -315,12 +316,12 @@ func (s *service) GetAllChatLinesText(ctx context.Context, chatID int) (string, 
 	for rows.Next() {
 		var lineText string
 		if err := rows.Scan(&lineText); err != nil {
-			return "", fmt.Errorf("failed to scan chat line text for chat_id %d: %w", chatID, err)
+			return "", fmt.Errorf("failed to scan chat line text for chat_id %s: %w", chatID, err)
 		}
 		lines = append(lines, lineText)
 	}
 	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("error iterating over chat line rows for chat_id %d: %w", chatID, err)
+		return "", fmt.Errorf("error iterating over chat line rows for chat_id %s: %w", chatID, err)
 	}
 	return strings.Join(lines, "\n"), nil
 }
@@ -332,7 +333,7 @@ func (s *service) CreateChat(ctx context.Context, title string, userID string) (
 	}
 	defer tx.Rollback()
 
-	var chatID int
+	var chatID string
 	var createdAt, updatedAt time.Time
 	chatQuery := `INSERT INTO chat (title, created_by_user_id) VALUES ($1, $2) RETURNING id, created_at, updated_at`
 	err = tx.QueryRowContext(ctx, chatQuery, title, userID).Scan(&chatID, &createdAt, &updatedAt)
@@ -452,7 +453,7 @@ func (s *service) GetChatsForUser(ctx context.Context, userID string) ([]Chat, e
 	return chats, nil
 }
 
-func (s *service) UpdateChat(ctx context.Context, chatID int, title string, userID string) error {
+func (s *service) UpdateChat(ctx context.Context, chatID string, title string, userID string) error {
 	var role string
 	checkQuery := `SELECT role FROM chat_participants WHERE chat_id = $1 AND user_id = $2`
 	err := s.db.QueryRowContext(ctx, checkQuery, chatID, userID).Scan(&role)
@@ -470,12 +471,12 @@ func (s *service) UpdateChat(ctx context.Context, chatID int, title string, user
 	updateQuery := `UPDATE chat SET title = $1, updated_at = NOW() WHERE id = $2`
 	_, err = s.db.ExecContext(ctx, updateQuery, title, chatID)
 	if err != nil {
-		return fmt.Errorf("failed to update chat title for chat_id %d: %w", chatID, err)
+		return fmt.Errorf("failed to update chat title for chat_id %s: %w", chatID, err)
 	}
 	return nil
 }
 
-func (s *service) DeleteChat(ctx context.Context, chatID int, userID string) error {
+func (s *service) DeleteChat(ctx context.Context, chatID string, userID string) error {
 	var role string
 	checkQuery := `SELECT role FROM chat_participants WHERE chat_id = $1 AND user_id = $2`
 	err := s.db.QueryRowContext(ctx, checkQuery, chatID, userID).Scan(&role)
@@ -493,7 +494,7 @@ func (s *service) DeleteChat(ctx context.Context, chatID int, userID string) err
 	deleteQuery := `DELETE FROM chat WHERE id = $1`
 	_, err = s.db.ExecContext(ctx, deleteQuery, chatID)
 	if err != nil {
-		return fmt.Errorf("failed to delete chat with id %d: %w", chatID, err)
+		return fmt.Errorf("failed to delete chat with id %s: %w", chatID, err)
 	}
 	return nil
 }

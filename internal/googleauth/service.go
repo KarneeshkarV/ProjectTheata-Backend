@@ -2,13 +2,13 @@ package googleauth
 
 import (
 	"backend/internal/config"
-	"backend/internal/database" 
+	"backend/internal/database"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex" // <<<--- ADD THIS IMPORT
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -20,18 +20,18 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	googleoauth "google.golang.org/api/oauth2/v2" 
+	googleoauth "google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/option"
 )
 
 var (
 	googleOauthScopes = []string{
-		"https://www.googleapis.com/auth/userinfo.email",    
-		"https://www.googleapis.com/auth/userinfo.profile",  
-		"https://www.googleapis.com/auth/gmail.send",        
-		"https://www.googleapis.com/auth/gmail.readonly",    
-		"https://www.googleapis.com/auth/calendar.events",   
-		"https://www.googleapis.com/auth/drive.metadata.readonly", 
+		"https://www.googleapis.com/auth/userinfo.email",
+		"https://www.googleapis.com/auth/userinfo.profile",
+		"https://www.googleapis.com/auth/gmail.send",
+		"https://www.googleapis.com/auth/gmail.readonly",
+		"https://www.googleapis.com/auth/calendar.events",
+		"https://www.googleapis.com/auth/drive.metadata.readonly",
 	}
 )
 
@@ -44,7 +44,7 @@ type Service interface {
 }
 
 type service struct {
-	db          database.Service 
+	db          database.Service
 	oauthConfig *oauth2.Config
 	encryptionKey []byte
 }
@@ -58,28 +58,18 @@ func NewService(dbService database.Service, cfg *config.Config) (Service, error)
 	var err error
 
 	if cfg.TokenEncryptionKey == "" {
-		log.Println("CRITICAL Warning: TOKEN_ENCRYPTION_KEY is empty. Using a default, highly insecure key. THIS IS NOT SAFE FOR PRODUCTION AND WILL LIKELY FAIL IN NON-DEV ENVIRONMENTS.")
-		keyBytes = []byte("this-is-a-default-32-byte-key!") // This is 31 bytes, will cause error. Let's make it 32 for fallback.
-		// For a fallback to actually work with AES-256, it MUST be 32 bytes.
-		// keyBytes = []byte("!!DefaultInsecureKeyForDevOnly!!") // Example 32-byte string if you must have a text fallback
-		// Better to fail hard if the key isn't set or is wrong in production.
-		// For now, let's assume the user will set a proper hex key.
-		// If we *must* have a text fallback, it needs to be 32 chars for []byte() to make it 32 bytes.
-		// However, the goal is to use a hex-decoded key.
+		log.Println("CRITICAL Warning: TOKEN_ENCRYPTION_KEY is not set. Token encryption/decryption will fail.")
 		return nil, errors.New("TOKEN_ENCRYPTION_KEY is not set in environment. This is required for secure operation.")
-
-	} else {
-		// Attempt to hex-decode the key from the config
-		keyBytes, err = hex.DecodeString(cfg.TokenEncryptionKey)
-		if err != nil {
-			log.Printf("Error: Failed to hex-decode TOKEN_ENCRYPTION_KEY: %v. Ensure it's a valid hex string.", err)
-			return nil, fmt.Errorf("token encryption key is not a valid hex string: %w", err)
-		}
 	}
 
-	// NOW, check the length of the *decoded* keyBytes
+	keyBytes, err = hex.DecodeString(cfg.TokenEncryptionKey)
+	if err != nil {
+		log.Printf("Error: Failed to hex-decode TOKEN_ENCRYPTION_KEY: %v. Ensure it's a valid hex string.", err)
+		return nil, fmt.Errorf("token encryption key is not a valid hex string: %w", err)
+	}
+
 	if len(keyBytes) != 32 {
-		log.Printf("Error: Decoded TOKEN_ENCRYPTION_KEY must be 32 bytes long for AES-256, but got %d bytes from hex string '%s'.", len(keyBytes), cfg.TokenEncryptionKey)
+		log.Printf("Error: Decoded TOKEN_ENCRYPTION_KEY must be 32 bytes long for AES-256, but got %d bytes.", len(keyBytes))
 		return nil, fmt.Errorf("decoded token encryption key must be 32 bytes long, but got %d bytes", len(keyBytes))
 	}
 
@@ -97,7 +87,7 @@ func NewService(dbService database.Service, cfg *config.Config) (Service, error)
 	return &service{
 		db:            dbService,
 		oauthConfig:   conf,
-		encryptionKey: keyBytes, // Use the decoded keyBytes
+		encryptionKey: keyBytes,
 	}, nil
 }
 
@@ -116,7 +106,7 @@ func (s *service) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	stateWithUserID := fmt.Sprintf("%s:%s", oauthState, supabaseUserID)
 	log.Printf("Generated OAuth state for Supabase user %s: %s (full state: %s)", supabaseUserID, oauthState, stateWithUserID)
 	authURL := s.oauthConfig.AuthCodeURL(stateWithUserID, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
-	log.Printf("Redirecting user %s to Google auth URL", supabaseUserID) // Removed URL from log for brevity
+	log.Printf("Redirecting user %s to Google auth URL", supabaseUserID)
 	http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
 }
 
@@ -139,14 +129,14 @@ func (s *service) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		errMsg := r.URL.Query().Get("error")
 		errDesc := r.URL.Query().Get("error_description")
 		log.Printf("Google OAuth error: %s, Description: %s", errMsg, errDesc)
-		http.Redirect(w, r, fmt.Sprintf("%s/auth-callback?success=false&error=%s", config.AppConfig.FrontendURL, errMsg), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprintf("%s/app?google_auth_success=false&error=%s", config.AppConfig.FrontendURL, errMsg), http.StatusTemporaryRedirect)
 		return
 	}
 
 	token, err := s.oauthConfig.Exchange(ctx, code)
 	if err != nil {
 		log.Printf("Error exchanging OAuth code for token (Supabase User: %s): %v", supabaseUserID, err)
-		http.Redirect(w, r, fmt.Sprintf("%s/auth-callback?success=false&error=token_exchange_failed", config.AppConfig.FrontendURL), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprintf("%s/app?google_auth_success=false&error=token_exchange_failed", config.AppConfig.FrontendURL), http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -156,7 +146,7 @@ func (s *service) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	encryptedAccessToken, err := s.encryptToken(token.AccessToken)
 	if err != nil {
 		log.Printf("Error encrypting access token (Supabase User: %s): %v", supabaseUserID, err)
-		http.Redirect(w, r, fmt.Sprintf("%s/auth-callback?success=false&error=token_encryption_failed", config.AppConfig.FrontendURL), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprintf("%s/app?google_auth_success=false&error=token_encryption_failed", config.AppConfig.FrontendURL), http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -182,7 +172,7 @@ func (s *service) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	err = s.db.SaveOrUpdateUserGoogleToken(ctx, dbToken)
 	if err != nil {
 		log.Printf("Error saving Google tokens to DB (Supabase User: %s): %v", supabaseUserID, err)
-		http.Redirect(w, r, fmt.Sprintf("%s/auth-callback?success=false&error=db_save_failed", config.AppConfig.FrontendURL), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprintf("%s/app?google_auth_success=false&error=db_save_failed", config.AppConfig.FrontendURL), http.StatusTemporaryRedirect)
 		return
 	}
 	log.Printf("Successfully saved/updated Google tokens for Supabase User %s", supabaseUserID)
@@ -199,7 +189,7 @@ func (s *service) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("Warning: Could not create userinfo service (Supabase User: %s): %v", supabaseUserID, err)
 	}
-	http.Redirect(w, r, fmt.Sprintf("%s/auth-callback?google_auth_success=true&supabase_user_id=%s", config.AppConfig.FrontendURL, supabaseUserID), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, fmt.Sprintf("%s/app?google_auth_success=true&supabase_user_id=%s", config.AppConfig.FrontendURL, supabaseUserID), http.StatusTemporaryRedirect)
 }
 
 func (s *service) GetEncryptedTokensBySupabaseUserID(ctx context.Context, supabaseUserID string) (*database.UserGoogleToken, error) {
@@ -207,7 +197,7 @@ func (s *service) GetEncryptedTokensBySupabaseUserID(ctx context.Context, supaba
 }
 
 func (s *service) encryptToken(tokenString string) (string, error) {
-	if len(s.encryptionKey) != 32 { // Should have been caught in NewService, but defensive check
+	if len(s.encryptionKey) != 32 {
 		return "", errors.New("encryption key is not 32 bytes long; cannot encrypt")
 	}
 	if tokenString == "" {
@@ -234,7 +224,7 @@ func (s *service) encryptToken(tokenString string) (string, error) {
 }
 
 func (s *service) DecryptToken(encryptedToken string) (string, error) {
-	if len(s.encryptionKey) != 32 { // Defensive check
+	if len(s.encryptionKey) != 32 {
 		return "", errors.New("encryption key is not 32 bytes long; cannot decrypt")
 	}
 	if encryptedToken == "" {
@@ -264,7 +254,6 @@ func (s *service) DecryptToken(encryptedToken string) (string, error) {
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
 	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		// Common error if key is wrong or data corrupted
 		return "", fmt.Errorf("failed to decrypt token (cipher GCM open failed): %w", err)
 	}
 

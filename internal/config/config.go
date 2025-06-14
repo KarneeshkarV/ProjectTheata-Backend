@@ -10,7 +10,7 @@ import (
 )
 
 type Config struct {
-	Port                   int // This will be the primary port
+	Port                   int
 	GoogleClientID         string
 	GoogleClientSecret     string
 	GoogleRedirectURI      string
@@ -23,7 +23,6 @@ type Config struct {
 	ADKAgentAppName        string
 	DefaultADKUserID       string
 	DefaultADKSessionID    string
-	// GoBackendPort          string // REMOVED
 	SummarizerProvider     string
 	SummarizerOpenAIAPIKey string
 	SummarizerGeminiAPIKey string
@@ -52,11 +51,6 @@ func LoadConfig() (*Config, error) {
 		log.Fatalf("Invalid PORT value: %s", portStr)
 		return nil, err
 	}
-
-	// goBackendPort := os.Getenv("GO_BACKEND_PORT") // REMOVED
-	// if goBackendPort == "" {                      // REMOVED
-	// 	goBackendPort = portStr                   // REMOVED
-	// }                                             // REMOVED
 
 	sumMaxTokens, _ := strconv.Atoi(os.Getenv("SUMMARIZER_MAX_TOKENS"))
 	if sumMaxTokens == 0 {
@@ -96,7 +90,6 @@ func LoadConfig() (*Config, error) {
 		ADKAgentAppName:        os.Getenv("ADK_AGENT_APP_NAME"),
 		DefaultADKUserID:       "default_user_go",
 		DefaultADKSessionID:    "default_session_go",
-		// GoBackendPort:          goBackendPort, // REMOVED
 		SummarizerProvider:     os.Getenv("SUMMARIZER_PROVIDER"),
 		SummarizerOpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
 		SummarizerGeminiAPIKey: os.Getenv("GEMINI_API_KEY"),
