@@ -792,6 +792,13 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	chatID := payload.ChatID
+
+	if err := s.db.EnsureChatExists(ctx, chatID); err != nil {
+		log.Printf("Error ensuring chat record exists for ChatID %s (Transcript Log): %v", chatID, err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to ensure chat session for logging")
+		return
+	}
+
 	userID, err := s.db.GetOrCreateChatUserByHandle(ctx, payload.Speaker)
 	if err != nil {
 		log.Printf("Error getting/creating user '%s' for transcript logging: %v", payload.Speaker, err)
