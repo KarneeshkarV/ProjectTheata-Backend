@@ -44,6 +44,15 @@ type SSEEvent struct {
 	Payload interface{} `json:"payload"`
 }
 
+// Struct definition for background task requests from the frontend
+type TaskRequest struct {
+	UserID          string                 `json:"user_id,omitempty"`
+	ToolName        string                 `json:"tool_name,omitempty"`
+	Parameters      map[string]interface{} `json:"parameters,omitempty"`
+	TextInstruction string                 `json:"text,omitempty"`
+	ClientDatetime  string                 `json:"client_datetime,omitempty"` // New field for client's time
+}
+
 func NewSSEClientManager(retryInterval time.Duration, maxClientsPerSession int) *SSEClientManager {
 	return &SSEClientManager{
 		clients:              make(map[string]map[chan SSEEvent]bool),
@@ -908,12 +917,6 @@ func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
-	type TaskRequest struct {
-		UserID          string                 `json:"user_id,omitempty"`
-		ToolName        string                 `json:"tool_name,omitempty"`
-		Parameters      map[string]interface{} `json:"parameters,omitempty"`
-		TextInstruction string                 `json:"text,omitempty"`
-	}
 	var taskReq TaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&taskReq); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid task request payload: "+err.Error())
@@ -1009,9 +1012,21 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 		paramsJSON, _ := json.Marshal(taskReq.Parameters)
 		adkMessageText = fmt.Sprintf("Execute tool '%s' with parameters: %s", taskReq.ToolName, string(paramsJSON))
 	}
-	if supabaseUserID != "" {
-		adkMessageText = fmt.Sprintf("%s\n\n(Context: The user_id for this session is '%s')", adkMessageText, supabaseUserID)
+
+	// Build context string and append it to the message for the ADK agent
+	var contextParts []string
+	if taskReq.ClientDatetime != "" {
+		contextParts = append(contextParts, fmt.Sprintf("The user's local date and time is '%s'", taskReq.ClientDatetime))
 	}
+	if supabaseUserID != "" {
+		contextParts = append(contextParts, fmt.Sprintf("The user_id for this session is '%s'", supabaseUserID))
+	}
+
+	if len(contextParts) > 0 {
+		contextString := strings.Join(contextParts, ". ")
+		adkMessageText = fmt.Sprintf("%s\n\n(Context: %s)", adkMessageText, contextString)
+	}
+
 	adkRunURL := fmt.Sprintf("%s/run", s.cfg.ADKAgentBaseURL)
 	adkRunPayload := ADKRunPayload{
 		AppName:   s.cfg.ADKAgentAppName,
