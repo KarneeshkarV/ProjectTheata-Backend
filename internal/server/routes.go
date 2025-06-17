@@ -4,22 +4,20 @@ import (
 	"backend/internal/database"
 	"bytes"
 	"context"
-	_"database/sql"
 	"encoding/json"
-	_"errors"
 	"fmt"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
-	"golang.org/x/oauth2/google"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
-	_"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"golang.org/x/oauth2/google"
 )
 
 // SSE structures remain unchanged
@@ -44,13 +42,13 @@ type SSEEvent struct {
 	Payload interface{} `json:"payload"`
 }
 
-// Struct definition for background task requests from the frontend
+// **MODIFIED:** Removed the ClientDatetime field from the request struct.
+// The backend will no longer accept or expect a timestamp from the client.
 type TaskRequest struct {
 	UserID          string                 `json:"user_id,omitempty"`
 	ToolName        string                 `json:"tool_name,omitempty"`
 	Parameters      map[string]interface{} `json:"parameters,omitempty"`
 	TextInstruction string                 `json:"text,omitempty"`
-	ClientDatetime  string                 `json:"client_datetime,omitempty"` // New field for client's time
 }
 
 func NewSSEClientManager(retryInterval time.Duration, maxClientsPerSession int) *SSEClientManager {
@@ -924,6 +922,9 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	// **FIX: Generate the timestamp on the server**
+	serverExecutionTime := time.Now()
+
 	supabaseUserID := taskReq.UserID
 	adkUserIDForTask := s.cfg.DefaultADKUserID
 	if supabaseUserID != "" {
@@ -1013,19 +1014,16 @@ func (s *Server) handleExecuteADKTask(w http.ResponseWriter, r *http.Request) {
 		adkMessageText = fmt.Sprintf("Execute tool '%s' with parameters: %s", taskReq.ToolName, string(paramsJSON))
 	}
 
-	// Build context string and append it to the message for the ADK agent
+	// **FIX: Build context string using the reliable server-generated time**
 	var contextParts []string
-	if taskReq.ClientDatetime != "" {
-		contextParts = append(contextParts, fmt.Sprintf("The user's local date and time is '%s'", taskReq.ClientDatetime))
-	}
+	contextParts = append(contextParts, fmt.Sprintf("The server's current date and time is '%s'", serverExecutionTime.Format(time.RFC3339)))
+
 	if supabaseUserID != "" {
 		contextParts = append(contextParts, fmt.Sprintf("The user_id for this session is '%s'", supabaseUserID))
 	}
 
-	if len(contextParts) > 0 {
-		contextString := strings.Join(contextParts, ". ")
-		adkMessageText = fmt.Sprintf("%s\n\n(Context: %s)", adkMessageText, contextString)
-	}
+	contextString := strings.Join(contextParts, ". ")
+	adkMessageText = fmt.Sprintf("%s\n\n(Context: %s)", adkMessageText, contextString)
 
 	adkRunURL := fmt.Sprintf("%s/run", s.cfg.ADKAgentBaseURL)
 	adkRunPayload := ADKRunPayload{
