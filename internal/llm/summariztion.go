@@ -1,4 +1,4 @@
-package summarizer
+package llm
 
 import (
 	"context"

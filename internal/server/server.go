@@ -16,7 +16,8 @@ import (
 type Server struct {
 	port            int
 	db              database.Service
-	smrz            summarizer.Summarizer // Corrected type name from thought process
+	UIChangeService llm.UIchange
+	smrz            llm.Summarizer // Corrected type name from thought process
 	googleAuthSvc   googleauth.Service
 	httpClient      *http.Client
 	sseClientMgr    *SSEClientManager // Corrected type name from thought process
@@ -27,7 +28,7 @@ func NewServer(cfg *config.Config) *http.Server { // cfg is passed in
 	dbService := database.New() // Initialize database service
 
 	// Initialize summarizer service
-	smrzCfg := summarizer.Config{ // Corrected struct name from thought process
+	smrzCfg := llm.Config{ // Corrected struct name from thought process
 		Provider:     cfg.SummarizerProvider,
 		OpenAIAPIKey: cfg.SummarizerOpenAIAPIKey,
 		GeminiAPIKey: cfg.SummarizerGeminiAPIKey,
@@ -35,7 +36,7 @@ func NewServer(cfg *config.Config) *http.Server { // cfg is passed in
 		Temperature:  cfg.SummarizerTemperature,
 		Model:        cfg.SummarizerModel,
 	}
-	smrzService, err := summarizer.New(smrzCfg) // Corrected package.New from thought process
+	smrzService, err := llm.New(smrzCfg) // Corrected package.New from thought process
 	if err != nil {
 		log.Fatalf("Failed to initialize summarizer: %v", err)
 	}

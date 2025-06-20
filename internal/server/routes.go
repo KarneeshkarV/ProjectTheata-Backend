@@ -3,10 +3,11 @@ package server
 import (
 	"backend/internal/database"
 	"bytes"
+	"compress/gzip"
 	"context"
-	_"database/sql"
+	_ "database/sql"
 	"encoding/json"
-	_"errors"
+	_ "errors"
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -16,7 +17,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	_"strconv"
+	_ "strconv"
 	"strings"
 	"sync"
 	"time"
@@ -151,6 +152,9 @@ func (s *Server) RegisterRoutes() http.Handler {
 	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
 
+	r.Route("/extention", func(r chi.Router) {
+		r.Post("/code", s.extentionHtmlAndCssData)
+	})
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/ping-api", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("pong from /api/ping-api"))
@@ -178,7 +182,38 @@ func (s *Server) RegisterRoutes() http.Handler {
 	})
 	return r
 }
+func (s *Server) extentionHtmlAndCssData(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 15<<20)
+	defer r.Body.Close()
+	var reader io.Reader = r.Body
+	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			http.Error(w, "failed to create gzip reader: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	var payload_ext struct {
+		WebsiteUrl string `json:"website_url"`
+		CssCode    string `json:"css_code"`
+		HtmlCode   string `json:"html_code"`
+		Query      string `json:"user_query"`
+	}
+	if err := json.NewDecoder(reader).Decode(&payload_ext); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request body for extention")
+		return
+	}
+	defer r.Body.Close()
+	change, err := s.UIChangeService.Change(r.Context(), payload_ext.HtmlCode, payload_ext.CssCode, payload_ext.Query)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to change UI")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, change)
 
+}
 func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")
 	if chatID == "" {
@@ -1145,3 +1180,4 @@ func SanitizeForID(input string) string {
 	}
 	return result.String()
 }
+
