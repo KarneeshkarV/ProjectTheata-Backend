@@ -10,29 +10,31 @@ import (
 )
 
 type Config struct {
-	Port                   int
-	GoogleClientID         string
-	GoogleClientSecret     string
-	GoogleRedirectURI      string
-	TokenEncryptionKey     string
-	FrontendURL            string
-	SupabaseURL            string
-	SupabaseAnonKey        string
-	DatabaseURL            string
-	ADKAgentBaseURL        string
-	ADKAgentAppName        string
-	DefaultADKUserID       string
-	DefaultADKSessionID    string
-	SummarizerProvider     string
-	SummarizerOpenAIAPIKey string
-	SummarizerGeminiAPIKey string
-	SummarizerMaxTokens    int
-	SummarizerTemperature  float32
-	SummarizerModel        string
-	HttpClientTimeout      time.Duration
-	SSEClientRetryInterval time.Duration
+	Port                    int
+	GoogleClientID          string
+	GoogleClientSecret      string
+	GoogleRedirectURI       string
+	TokenEncryptionKey      string
+	FrontendURL             string
+	SupabaseURL             string
+	SupabaseAnonKey         string
+	DatabaseURL             string
+	ADKAgentBaseURL         string
+	ADKAgentAppName         string
+	DefaultADKUserID        string
+	DefaultADKSessionID     string
+	SummarizerProvider      string
+	SummarizerOpenAIAPIKey  string
+	SummarizerGeminiAPIKey  string
+	SummarizerMaxTokens     int
+	SummarizerTemperature   float32
+	SummarizerModel         string
+	HttpClientTimeout       time.Duration
+	SSEClientRetryInterval  time.Duration
 	SSEMaxClientsPerSession int
-	LogLevel               string
+	LogLevel                string
+	QdrantURL               string
+	QdrantAPIKey            string
 }
 
 var AppConfig *Config
@@ -78,28 +80,30 @@ func LoadConfig() (*Config, error) {
 	}
 
 	AppConfig = &Config{
-		Port:                   port,
-		GoogleClientID:         os.Getenv("GOOGLE_CLIENT_ID"),
-		GoogleClientSecret:     os.Getenv("GOOGLE_CLIENT_SECRET"),
-		GoogleRedirectURI:      os.Getenv("GOOGLE_REDIRECT_URI"),
-		TokenEncryptionKey:     os.Getenv("TOKEN_ENCRYPTION_KEY"),
-		FrontendURL:            os.Getenv("FRONTEND_URL"),
-		SupabaseURL:            os.Getenv("REACT_APP_SUPABASE_URL"),
-		SupabaseAnonKey:        os.Getenv("REACT_APP_SUPABASE_ANON_KEY"),
-		ADKAgentBaseURL:        os.Getenv("ADK_AGENT_BASE_URL"),
-		ADKAgentAppName:        os.Getenv("ADK_AGENT_APP_NAME"),
-		DefaultADKUserID:       "default_user_go",
-		DefaultADKSessionID:    "default_session_go",
-		SummarizerProvider:     os.Getenv("SUMMARIZER_PROVIDER"),
-		SummarizerOpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
-		SummarizerGeminiAPIKey: os.Getenv("GEMINI_API_KEY"),
-		SummarizerMaxTokens:    sumMaxTokens,
-		SummarizerTemperature:  sumTemp,
-		SummarizerModel:        os.Getenv("SUMMARIZER_MODEL"),
-		HttpClientTimeout:      time.Duration(httpClientTimeoutSeconds) * time.Second,
-		SSEClientRetryInterval: time.Duration(sseRetrySeconds) * time.Second,
+		Port:                    port,
+		GoogleClientID:          os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret:      os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURI:       os.Getenv("GOOGLE_REDIRECT_URI"),
+		TokenEncryptionKey:      os.Getenv("TOKEN_ENCRYPTION_KEY"),
+		FrontendURL:             os.Getenv("FRONTEND_URL"),
+		SupabaseURL:             os.Getenv("REACT_APP_SUPABASE_URL"),
+		SupabaseAnonKey:         os.Getenv("REACT_APP_SUPABASE_ANON_KEY"),
+		ADKAgentBaseURL:         os.Getenv("ADK_AGENT_BASE_URL"),
+		ADKAgentAppName:         os.Getenv("ADK_AGENT_APP_NAME"),
+		DefaultADKUserID:        "default_user_go",
+		DefaultADKSessionID:     "default_session_go",
+		SummarizerProvider:      os.Getenv("SUMMARIZER_PROVIDER"),
+		SummarizerOpenAIAPIKey:  os.Getenv("OPENAI_API_KEY"),
+		SummarizerGeminiAPIKey:  os.Getenv("GEMINI_API_KEY"),
+		SummarizerMaxTokens:     sumMaxTokens,
+		SummarizerTemperature:   sumTemp,
+		SummarizerModel:         os.Getenv("SUMMARIZER_MODEL"),
+		HttpClientTimeout:       time.Duration(httpClientTimeoutSeconds) * time.Second,
+		SSEClientRetryInterval:  time.Duration(sseRetrySeconds) * time.Second,
 		SSEMaxClientsPerSession: sseMaxClients,
-		LogLevel:               os.Getenv("LOG_LEVEL"),
+		QdrantURL:               os.Getenv("QDRANT_URL"),
+		QdrantAPIKey:            os.Getenv("QDRANT_API_KEY"),
+		LogLevel:                os.Getenv("LOG_LEVEL"),
 	}
 
 	log.Printf("Configuration Loaded: Port=%d, GoogleRedirectURI=%s, FrontendURL=%s, ADKAgentBaseURL=%s",

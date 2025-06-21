@@ -153,7 +153,10 @@ func (s *Server) RegisterRoutes() http.Handler {
 		r.Get("/ping-api", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("pong from /api/ping-api"))
 		})
-
+		r.Route("/qdrant", func(r chi.Router) {
+			r.Get("/*", s.QdrantProxyHandler())
+			r.Post("/*", s.QdrantProxyHandler())
+		})
 		r.Get("/auth/google/login", s.googleAuthSvc.HandleLogin)
 		r.Get("/auth/google/callback", s.googleAuthSvc.HandleCallback)
 		r.Get("/auth/google/status", s.handleGoogleAuthStatus)
