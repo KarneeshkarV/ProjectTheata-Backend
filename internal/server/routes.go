@@ -205,14 +205,22 @@ func (s *Server) extentionHtmlAndCssData(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusBadRequest, "Invalid request body for extention")
 		return
 	}
-	defer r.Body.Close()
-	change, err := s.UIChangeService.Change(r.Context(), payload_ext.HtmlCode, payload_ext.CssCode, payload_ext.Query)
+
+	
+	change, err := s.uiChanger.Change(r.Context(), payload_ext.HtmlCode, payload_ext.CssCode, payload_ext.Query)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to change UI")
 		return
 	}
-	respondWithJSON(w, http.StatusOK, change)
 
+	changePayload := map[string]interface{}{
+		"state": map[string]interface{}{
+			"change": change,
+		},
+	}
+	
+	log.Println(change)
+	respondWithJSON(w, http.StatusOK, changePayload)
 }
 func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")

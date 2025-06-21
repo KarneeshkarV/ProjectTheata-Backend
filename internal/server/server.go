@@ -4,7 +4,7 @@ import (
 	"backend/internal/config"
 	"backend/internal/database"
 	"backend/internal/googleauth"
-	"backend/internal/llm" // Ensure this is the correct package name
+	"backend/internal/llm"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,21 +14,21 @@ import (
 )
 
 type Server struct {
-	port            int
-	db              database.Service
-	UIChangeService llm.UIchange
-	smrz            llm.Summarizer // Corrected type name from thought process
-	googleAuthSvc   googleauth.Service
-	httpClient      *http.Client
-	sseClientMgr    *SSEClientManager // Corrected type name from thought process
-	cfg             *config.Config    // Store the config
+	port          int
+	db            database.Service
+	uiChanger     llm.UIChanger // CORRECTED: Use the interface for the service
+	smrz          llm.Summarizer
+	googleAuthSvc googleauth.Service
+	httpClient    *http.Client
+	sseClientMgr  *SSEClientManager
+	cfg           *config.Config
 }
 
-func NewServer(cfg *config.Config) *http.Server { // cfg is passed in
-	dbService := database.New() // Initialize database service
+func NewServer(cfg *config.Config) *http.Server {
+	dbService := database.New()
 
 	// Initialize summarizer service
-	smrzCfg := llm.Config{ // Corrected struct name from thought process
+	smrzCfg := llm.Config{
 		Provider:     cfg.SummarizerProvider,
 		OpenAIAPIKey: cfg.SummarizerOpenAIAPIKey,
 		GeminiAPIKey: cfg.SummarizerGeminiAPIKey,
@@ -36,9 +36,14 @@ func NewServer(cfg *config.Config) *http.Server { // cfg is passed in
 		Temperature:  cfg.SummarizerTemperature,
 		Model:        cfg.SummarizerModel,
 	}
-	smrzService, err := llm.New(smrzCfg) // Corrected package.New from thought process
+	smrzService, err := llm.New(smrzCfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize summarizer: %v", err)
+	}
+
+	uiChangerService, err := llm.NewGeminiUIChanger(cfg.UIChangerGeminiAPIKey, cfg.UIChangerModel)
+	if err != nil {
+		log.Fatalf("Failed to initialize UI Changer service: %v", err)
 	}
 
 	// Initialize Google Auth Service
@@ -49,29 +54,30 @@ func NewServer(cfg *config.Config) *http.Server { // cfg is passed in
 
 	// Initialize HTTP Client
 	httpClient := &http.Client{
-		Timeout: cfg.HttpClientTimeout, // Use timeout from config
+		Timeout: cfg.HttpClientTimeout,
 	}
 
 	// Initialize SSE Client Manager
-	// Pass retry interval and max clients from config
 	sseClientManager := NewSSEClientManager(cfg.SSEClientRetryInterval, cfg.SSEMaxClientsPerSession)
-	go sseClientManager.Run() // Run in a goroutine
+	go sseClientManager.Run()
 
 	// Create the server instance
 	newServer := &Server{
-		port:            cfg.Port,
-		db:              dbService,
-		smrz:            smrzService,
-		googleAuthSvc:   googleAuthService,
-		httpClient:      httpClient,
-		sseClientMgr:    sseClientManager,
-		cfg:             cfg, // Store the config
+		port:          cfg.Port,
+		db:            dbService,
+		smrz:          smrzService,
+		uiChanger:     uiChangerService, // CORRECTED: Assign the initialized service
+		googleAuthSvc: googleAuthService,
+		httpClient:    httpClient,
+		sseClientMgr:  sseClientManager,
+		cfg:           cfg,
+		// REMOVED: The incorrect UIChangeService field
 	}
 
 	// Configure HTTP server
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", newServer.port), // Server will listen on cfg.Port
-		Handler:      newServer.RegisterRoutes(),         // Register routes
+		Addr:         fmt.Sprintf(":%d", newServer.port),
+		Handler:      newServer.RegisterRoutes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -81,3 +87,4 @@ func NewServer(cfg *config.Config) *http.Server { // cfg is passed in
 		newServer.port, cfg.FrontendURL, cfg.ADKAgentBaseURL)
 	return server
 }
+
