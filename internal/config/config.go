@@ -79,6 +79,11 @@ func LoadConfig() (*Config, error) {
 		sseMaxClients = 10
 	}
 
+	uiChangerModel := os.Getenv("UI_CHANGER_MODEL")
+	if uiChangerModel == "" {
+		uiChangerModel = "gemini-1.5-flash"
+	}
+
 	AppConfig = &Config{
 		Port:                    port,
 		GoogleClientID:          os.Getenv("GOOGLE_CLIENT_ID"),
@@ -102,6 +107,8 @@ func LoadConfig() (*Config, error) {
 		SSEClientRetryInterval:  time.Duration(sseRetrySeconds) * time.Second,
 		SSEMaxClientsPerSession: sseMaxClients,
 		LogLevel:                os.Getenv("LOG_LEVEL"),
+		UIChangerGeminiAPIKey:   os.Getenv("UI_CHANGER_GEMINI_API_KEY"),
+		UIChangerModel:          uiChangerModel,
 	}
 
 	log.Printf("Configuration Loaded: Port=%d, GoogleRedirectURI=%s, FrontendURL=%s, ADKAgentBaseURL=%s",
