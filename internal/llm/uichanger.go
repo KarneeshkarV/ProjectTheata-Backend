@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/google/generative-ai-go/genai"
@@ -95,7 +96,13 @@ func (g *GeminiUIChanger) Change(ctx context.Context, html string, css string, q
 	responseText := responseTextBuilder.String()
 
 	var changes []UIChange
+
 	err = json.Unmarshal([]byte(responseText), &changes)
+	for i, c := range changes {
+		if c.Type == "css" {
+			changes[i].Code = forceImportant(c.Code)
+		}
+	}
 	if err != nil {
 		log.Printf("Failed to unmarshal LLM JSON response into array. Raw response: %s", responseText)
 		return nil, fmt.Errorf("failed to parse JSON array from LLM: %w", err)
@@ -119,6 +126,7 @@ func (g *GeminiUIChanger) buildPrompt(html string, css string, query string) str
 	promptTpl := `You are an expert web developer. Your task is to modify a webpage based on a user's request.
 Analyze the request and determine if it requires changes to HTML, CSS, and/or JavaScript.
 You MUST return a single, raw JSON array where each object in the array represents one step of the change.
+You must overide any css changes using !important eg ( border: 3px solid red !important;),
 Each object must have two keys: "type" and "code".
 - The "type" key must be a string with one of these values: "html", "css", or "javascript".
 - The "code" key must contain the raw code to be injected or executed.
@@ -128,7 +136,9 @@ Each object must have two keys: "type" and "code".
 1.  **Return ONLY the raw JSON array.** Do not include any explanations, comments, or markdown formatting like ` + "```json" + `.
 2.  For 'javascript' code, use modern, vanilla JavaScript (ES6+). Do not use external libraries.
 3.  The generated code must be immediately executable or injectable.
-
+4.  All CSS returned here will be placed in a single <style> tag appended at the
+    very end of <head>, therefore cascade-winning selectors or !important are
+    needed only when you must beat inline styles.
 **Context:**
 
 **Current HTML (truncated):**
@@ -146,4 +156,8 @@ Each object must have two keys: "type" and "code".
 
 func (g *GeminiUIChanger) Close() error {
 	return g.client.Close()
+}
+func forceImportant(css string) string {
+	re := regexp.MustCompile(`([^;{}]+:[^;{}]+)(;)`)
+	return re.ReplaceAllString(css, "$1 !important;")
 }
