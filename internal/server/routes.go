@@ -145,11 +145,12 @@ func (s *Server) RegisterRoutes() http.Handler {
 		w.Write([]byte("pong from /ping"))
 	})
 	r.Get("/", s.HelloWorldHandler)
-	r.Get("/wolf", s.WolfFromAlpha)
 	r.Get("/health", s.healthHandler)
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
 
 	r.Route("/api", func(r chi.Router) {
+		r.Use(s.AuthMiddleware)
+		r.Get("/wolf", s.WolfFromAlpha)
 		r.Get("/ping-api", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("pong from /api/ping-api"))
 		})
@@ -181,6 +182,12 @@ func (s *Server) RegisterRoutes() http.Handler {
 }
 
 func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
+	_, ok := r.Context().Value(userContextKey).(string)
+	if !ok {
+		respondWithError(w, http.StatusUnauthorized, "user_id not found in context")
+		return
+	}
+
 	chatID := r.URL.Query().Get("chat_id")
 	if chatID == "" {
 		respondWithError(w, http.StatusBadRequest, "Invalid or missing chat_id")
@@ -202,9 +209,9 @@ func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetChats(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		respondWithError(w, http.StatusBadRequest, "user_id is required")
+	userID, ok := r.Context().Value(userContextKey).(string)
+	if !ok {
+		respondWithError(w, http.StatusUnauthorized, "user_id not found in context")
 		return
 	}
 
@@ -223,22 +230,27 @@ func (s *Server) handleGetChats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(userContextKey).(string)
+	if !ok {
+		respondWithError(w, http.StatusUnauthorized, "user_id not found in context")
+		return
+	}
+
 	var payload struct {
-		Title  string `json:"title"`
-		UserID string `json:"user_id"`
+		Title string `json:"title"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if payload.Title == "" || payload.UserID == "" {
-		respondWithError(w, http.StatusBadRequest, "title and user_id are required")
+	if payload.Title == "" {
+		respondWithError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 
-	chat, err := s.db.CreateChat(r.Context(), payload.Title, payload.UserID)
+	chat, err := s.db.CreateChat(r.Context(), payload.Title, userID)
 	if err != nil {
-		log.Printf("Error creating chat for user %s: %v", payload.UserID, err)
+		log.Printf("Error creating chat for user %s: %v", userID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to create chat")
 		return
 	}
@@ -247,6 +259,12 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(userContextKey).(string)
+	if !ok {
+		respondWithError(w, http.StatusUnauthorized, "user_id not found in context")
+		return
+	}
+
 	chatID := r.URL.Query().Get("chat_id")
 	if chatID == "" {
 		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
@@ -254,21 +272,20 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload struct {
-		Title  string `json:"title"`
-		UserID string `json:"user_id"`
+		Title string `json:"title"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if payload.Title == "" || payload.UserID == "" {
-		respondWithError(w, http.StatusBadRequest, "title and user_id are required")
+	if payload.Title == "" {
+		respondWithError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 
-	err := s.db.UpdateChat(r.Context(), chatID, payload.Title, payload.UserID)
+	err := s.db.UpdateChat(r.Context(), chatID, payload.Title, userID)
 	if err != nil {
-		log.Printf("Error updating chat %s for user %s: %v", chatID, payload.UserID, err)
+		log.Printf("Error updating chat %s for user %s: %v", chatID, userID, err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update chat")
 		return
 	}
@@ -277,14 +294,15 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(userContextKey).(string)
+	if !ok {
+		respondWithError(w, http.StatusUnauthorized, "user_id not found in context")
+		return
+	}
+
 	chatID := r.URL.Query().Get("chat_id")
 	if chatID == "" {
 		respondWithError(w, http.StatusBadRequest, "Invalid chat_id")
-		return
-	}
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		respondWithError(w, http.StatusBadRequest, "user_id is required")
 		return
 	}
 

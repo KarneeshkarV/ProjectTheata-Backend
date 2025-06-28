@@ -18,6 +18,7 @@ type Config struct {
 	FrontendURL             string
 	SupabaseURL             string
 	SupabaseAnonKey         string
+	SupabaseJWTSecret       string
 	DatabaseURL             string
 	ADKAgentBaseURL         string
 	ADKAgentAppName         string
@@ -88,6 +89,7 @@ func LoadConfig() (*Config, error) {
 		FrontendURL:             os.Getenv("FRONTEND_URL"),
 		SupabaseURL:             os.Getenv("REACT_APP_SUPABASE_URL"),
 		SupabaseAnonKey:         os.Getenv("REACT_APP_SUPABASE_ANON_KEY"),
+		SupabaseJWTSecret:       os.Getenv("SUPABASE_JWT_SECRET"),
 		ADKAgentBaseURL:         os.Getenv("ADK_AGENT_BASE_URL"),
 		ADKAgentAppName:         os.Getenv("ADK_AGENT_APP_NAME"),
 		DefaultADKUserID:        "default_user_go",
