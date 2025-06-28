@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"log"
-
 	"github.com/golang-jwt/jwt/v4"
 )
 
@@ -15,7 +13,6 @@ const userContextKey = contextKey("user")
 
 func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 
-		log.Printf("In Middleware Yaya----------------------------")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
