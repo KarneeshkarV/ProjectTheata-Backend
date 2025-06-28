@@ -11,6 +11,9 @@ import (
 
 type Config struct {
 	Port                    int
+	RateLimitEnabled        bool
+	RateLimitRPS            float64 // Requests per second
+	RateLimitBurst          int
 	GoogleClientID          string
 	GoogleClientSecret      string
 	GoogleRedirectURI       string
@@ -79,7 +82,17 @@ func LoadConfig() (*Config, error) {
 	if sseMaxClients == 0 {
 		sseMaxClients = 10
 	}
+	rateLimitEnabled, _ := strconv.ParseBool(os.Getenv("RATE_LIMIT_ENABLED"))
 
+	rateLimitRPS, err := strconv.ParseFloat(os.Getenv("RATE_LIMIT_RPS"), 64)
+	if err != nil || rateLimitRPS <= 0 {
+		rateLimitRPS = 5 // Default: 5 requests per second
+	}
+
+	rateLimitBurst, err := strconv.Atoi(os.Getenv("RATE_LIMIT_BURST"))
+	if err != nil || rateLimitBurst <= 0 {
+		rateLimitBurst = 10 // Default: Allow a burst of 10 requests
+	}
 	AppConfig = &Config{
 		Port:                    port,
 		GoogleClientID:          os.Getenv("GOOGLE_CLIENT_ID"),
@@ -106,6 +119,9 @@ func LoadConfig() (*Config, error) {
 		QdrantURL:               os.Getenv("QDRANT_URL"),
 		QdrantAPIKey:            os.Getenv("QDRANT_API_KEY"),
 		LogLevel:                os.Getenv("LOG_LEVEL"),
+		RateLimitEnabled:        rateLimitEnabled,
+		RateLimitRPS:            rateLimitRPS,
+		RateLimitBurst:          rateLimitBurst,
 	}
 
 	log.Printf("Configuration Loaded: Port=%d, GoogleRedirectURI=%s, FrontendURL=%s, ADKAgentBaseURL=%s",

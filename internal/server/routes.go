@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/go-chi/httprate"
 	"io"
 	"log"
 	"net/http"
@@ -149,6 +150,27 @@ func (s *Server) RegisterRoutes() http.Handler {
 	r.Get("/health/summarizer", s.summarizerHealthHandler)
 
 	r.Route("/api", func(r chi.Router) {
+		if s.cfg.RateLimitEnabled {
+			log.Printf("Applying per-user rate limiting to /api routes (%d req/s)", s.cfg.RateLimitBurst)
+
+			r.Use(httprate.Limit(
+				s.cfg.RateLimitBurst, // requestLimit: Allow this many requests...
+				time.Second,          // windowLength: ...per second.
+
+				httprate.WithKeyFuncs(func(r *http.Request) (string, error) {
+					// GetUserIDFromContext is from your middleware.go
+					userID, ok := GetUserIDFromContext(r.Context())
+					if !ok || userID == "" {
+						return r.RemoteAddr, nil
+					}
+					return userID, nil // Use the Supabase User ID as the key
+				}),
+
+				/*                         httprate.WithLimitCounter(func(r *http.Request, remaining int) {*/
+				/*// You can use this to set headers like X-RateLimit-Remaining*/
+				/*}),*/
+			))
+		}
 		r.Use(s.AuthMiddleware)
 		r.Get("/wolf", s.WolfFromAlpha)
 		r.Get("/ping-api", func(w http.ResponseWriter, r *http.Request) {
